@@ -10,7 +10,7 @@ from src.tools.crm_mocks import (
     CRM_TOOLS,
     abrir_novo_chamado,
     buscar_cliente_por_telefone,
-    consultar_nota_fiscal,
+    rastrear_nota_fiscal,
     verificar_chamados_abertos,
 )
 
@@ -71,39 +71,50 @@ def test_verificar_chamados_cliente_com_multiplos_tickets():
 
 
 # ---------------------------------------------------------------------------
-# consultar_nota_fiscal — 3 variações de status
+# rastrear_nota_fiscal — variações no ciclo de entrega da mercadoria
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "id_cliente,status_esperado",
+    "id_cliente,numero_nota,etapa,comprovacao",
     [
-        ("CLI-1001", "pago"),
-        ("CLI-1002", "vencido"),
-        ("CLI-1003", "em_aberto"),
+        ("CLI-1001", "NF-1042", "em_rota", "pendente"),
+        ("CLI-1001", "NF-1043", "entregue", "validada"),
+        ("CLI-1002", "NF-2001", "transbordo", "pendente"),
+        ("CLI-1003", "NF-3001", "entregue", "rejeitada"),
     ],
 )
-def test_consultar_nota_fiscal_variacoes_de_status(id_cliente, status_esperado):
-    resultado = consultar_nota_fiscal.invoke(
-        {"id_cliente": id_cliente, "mes_referencia": "2026-04"}
+def test_rastrear_nota_fiscal_variacoes_no_ciclo(
+    id_cliente, numero_nota, etapa, comprovacao
+):
+    resultado = rastrear_nota_fiscal.invoke(
+        {"id_cliente": id_cliente, "numero_nota": numero_nota}
     )
     assert resultado["encontrado"] is True
-    assert resultado["status"] == status_esperado
-    assert isinstance(resultado["valor"], float)
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", resultado["vencimento"])
+    assert resultado["etapa"] == etapa
+    assert resultado["comprovacao"] == comprovacao
+    assert re.match(r"\d{4}-\d{2}-\d{2}T", resultado["atualizado_em"])
 
 
-def test_consultar_nota_fiscal_mes_invalido_retorna_erro():
-    resultado = consultar_nota_fiscal.invoke(
-        {"id_cliente": "CLI-1001", "mes_referencia": "abril/2026"}
+def test_rastrear_nota_fiscal_normaliza_numero_minusculo_e_espacos():
+    resultado = rastrear_nota_fiscal.invoke(
+        {"id_cliente": "CLI-1001", "numero_nota": "  nf-1042 "}
+    )
+    assert resultado["encontrado"] is True
+    assert resultado["numero_nota"] == "NF-1042"
+
+
+def test_rastrear_nota_fiscal_numero_desconhecido_nao_encontrado():
+    resultado = rastrear_nota_fiscal.invoke(
+        {"id_cliente": "CLI-1001", "numero_nota": "NF-0000"}
     )
     assert resultado["encontrado"] is False
-    assert "erro" in resultado
 
 
-def test_consultar_nota_fiscal_cliente_inexistente():
-    resultado = consultar_nota_fiscal.invoke(
-        {"id_cliente": "CLI-9999", "mes_referencia": "2026-04"}
+def test_rastrear_nota_fiscal_nao_vaza_nf_de_outro_cliente():
+    # NF-2001 existe, mas pertence ao CLI-1002 (LLM06 — não vazar dado alheio).
+    resultado = rastrear_nota_fiscal.invoke(
+        {"id_cliente": "CLI-1001", "numero_nota": "NF-2001"}
     )
     assert resultado["encontrado"] is False
 
@@ -159,7 +170,7 @@ def test_crm_tools_lista_contem_as_quatro_tools():
     assert nomes == {
         "buscar_cliente_por_telefone",
         "verificar_chamados_abertos",
-        "consultar_nota_fiscal",
+        "rastrear_nota_fiscal",
         "abrir_novo_chamado",
     }
 

@@ -64,7 +64,7 @@ def test_heuristica_rapida_bloqueia_jailbreaks_obvios(msg):
     [
         "Como configuro a integração Bling?",
         "Qual o status do meu chamado?",
-        "Minha nota fiscal de abril foi paga?",
+        "Onde rastreio minha nota fiscal NF-1042?",
         "Quero abrir um novo chamado: o painel não carrega",
         "Tem como gerar etiquetas em lote?",
         "Qual o horário de atendimento do suporte?",
@@ -110,6 +110,30 @@ def test_avaliar_entrada_chama_classificador_quando_heuristica_passa():
 
     assert out == {"is_safe": True, "categoria": "suporte", "motivo": "pergunta legítima"}
     assert fake.chamadas == ["Como configuro Bling?"]
+
+
+def test_montar_conteudo_classificador_inclui_contexto():
+    assert ig._montar_conteudo_classificador("06", None) == "06"
+    com = ig._montar_conteudo_classificador("06", "Assistente: Para qual mês de 2026?")
+    assert "Para qual mês de 2026?" in com
+    assert "06" in com
+    assert "NÃO classifique" in com
+
+
+def test_avaliar_entrada_repassa_contexto_ao_classificador():
+    capt: dict = {}
+
+    def _fake(texto, contexto=None):
+        capt["texto"] = texto
+        capt["contexto"] = contexto
+        return {"is_safe": True, "categoria": "suporte", "motivo": "ok"}
+
+    out = ig.avaliar_entrada(
+        "06", contexto="Assistente: Para qual mês?", classificador=_fake
+    )
+    assert out["categoria"] == "suporte"
+    assert capt["texto"] == "06"
+    assert "Para qual mês" in capt["contexto"]
 
 
 def test_avaliar_entrada_classificador_bloqueia_off_topic():
@@ -274,16 +298,16 @@ def test_envolver_dado_externo_remove_nul_byte():
 # ---------------------------------------------------------------------------
 
 
-def test_envolver_chunks_rag_inclui_pagina_e_origem():
+def test_envolver_chunks_rag_inclui_secao_e_origem():
     chunks = [
-        {"texto": "passo 1: clique aqui", "pagina": 2, "source": "base.pdf"},
-        {"texto": "passo 2: salve", "pagina": 3, "source": "base.pdf"},
+        {"texto": "passo 1: clique aqui", "secao": "Pesquisa › Filtros", "source": "azapfy-web.md"},
+        {"texto": "passo 2: salve", "secao": "Pesquisa › Histórico", "source": "azapfy-web.md"},
     ]
     out = og.envolver_chunks_rag(chunks)
 
     assert out.count("<documento_externo") == 2
-    assert 'pagina="2"' in out
-    assert 'pagina="3"' in out
+    assert 'secao="Pesquisa › Filtros"' in out
+    assert 'secao="Pesquisa › Histórico"' in out
     assert 'origem="rag"' in out
     assert "passo 1: clique aqui" in out
     assert "passo 2: salve" in out
@@ -291,19 +315,19 @@ def test_envolver_chunks_rag_inclui_pagina_e_origem():
 
 def test_envolver_chunks_rag_ignora_chunk_sem_texto():
     chunks = [
-        {"texto": "ok", "pagina": 1, "source": "base.pdf"},
-        {"texto": "", "pagina": 2, "source": "base.pdf"},
-        {"pagina": 3, "source": "base.pdf"},
+        {"texto": "ok", "secao": "A", "source": "azapfy-web.md"},
+        {"texto": "", "secao": "B", "source": "azapfy-web.md"},
+        {"secao": "C", "source": "azapfy-web.md"},
     ]
     out = og.envolver_chunks_rag(chunks)
     assert out.count("<documento_externo") == 1
 
 
-def test_envolver_chunks_rag_aceita_pagina_none():
-    chunks = [{"texto": "ok", "pagina": None, "source": "base.pdf"}]
+def test_envolver_chunks_rag_aceita_secao_none():
+    chunks = [{"texto": "ok", "secao": None, "source": "azapfy-web.md"}]
     out = og.envolver_chunks_rag(chunks)
-    # Sem `pagina=` quando ela é None.
-    assert "pagina=" not in out
+    # Sem `secao=` quando ela é None/vazia.
+    assert "secao=" not in out
     assert 'origem="rag"' in out
 
 

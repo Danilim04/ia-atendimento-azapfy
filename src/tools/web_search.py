@@ -68,11 +68,8 @@ def buscar_na_web_azapfy(query: str) -> dict[str, Any]:
             query.
 
     Returns:
-        Dicionário com:
-          - encontrado (bool): True se algum resultado foi devolvido.
-          - total (int)
-          - resultados (list[dict]): cada item com `url`, `title`, `content`.
-          - erro (str, opcional): mensagem caso a busca falhe.
+        dict: encontrado (bool), total (int), resultados (list com url, title,
+        content), erro (opcional).
     """
     query_original = (query or "").strip()
     if not query_original:

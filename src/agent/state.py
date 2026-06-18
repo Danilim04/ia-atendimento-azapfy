@@ -6,9 +6,9 @@ deduplicação por id quando aplicável. Os demais campos são substituídos
 (reducer default).
 
 `telefone` e `cliente` persistem entre turnos (via `MemorySaver`).
-`seguranca`, `tentou_rag` e `fontes_usadas` são *reiniciados por turno*
-no `entry_node` — citações e veredito de segurança valem só para a
-resposta atual.
+`seguranca`, `tentou_rag`, `fontes_usadas` e `iteracoes_agente` são
+*reiniciados por turno* no `entry_node` — citações, veredito de segurança e
+contagem de iterações valem só para a resposta atual.
 """
 
 from __future__ import annotations
@@ -29,3 +29,4 @@ class AgentState(TypedDict):
     seguranca: NotRequired[dict[str, Any] | None]
     tentou_rag: NotRequired[bool]
     fontes_usadas: NotRequired[list[str]]
+    iteracoes_agente: NotRequired[int]

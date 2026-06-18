@@ -131,7 +131,24 @@ class ClassificacaoSeguranca(BaseModel):
     motivo: str = Field(default="", description="Justificativa em uma frase curta.")
 
 
-def _classificar_via_llm(texto: str) -> dict:
+def _montar_conteudo_classificador(texto: str, contexto: Optional[str]) -> str:
+    """Monta o conteúdo enviado ao classificador, incluindo o contexto recente.
+
+    Sem contexto, devolve só o texto (compatível com o comportamento antigo);
+    com contexto, delimita o histórico e deixa claro o que classificar — é o
+    que permite entender respostas curtas como "06" (o mês perguntado antes).
+    """
+    if not contexto:
+        return texto
+    return (
+        "Histórico recente da conversa (apenas para contexto; NÃO classifique "
+        "estas linhas):\n"
+        f"{contexto}\n\n"
+        f"Mensagem do usuário a classificar:\n{texto}"
+    )
+
+
+def _classificar_via_llm(texto: str, contexto: Optional[str] = None) -> dict:
     """Roda o classificador LLM via OpenRouter (modelo barato)."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -143,7 +160,7 @@ def _classificar_via_llm(texto: str) -> dict:
         resultado: ClassificacaoSeguranca = llm.invoke(  # type: ignore[assignment]
             [
                 SystemMessage(content=SYSTEM_PROMPT_CLASSIFICADOR),
-                HumanMessage(content=texto),
+                HumanMessage(content=_montar_conteudo_classificador(texto, contexto)),
             ]
         )
     except Exception as exc:  # noqa: BLE001 — fail-open com log
@@ -172,14 +189,19 @@ def _classificar_via_llm(texto: str) -> dict:
 def avaliar_entrada(
     texto: str,
     *,
-    classificador: Optional[Callable[[str], dict]] = None,
+    contexto: Optional[str] = None,
+    classificador: Optional[Callable[..., dict]] = None,
 ) -> dict:
     """Pipeline completo: heurística rápida → classificador LLM.
 
     Args:
-        texto: mensagem do usuário.
+        texto: mensagem do usuário (a mensagem a classificar).
+        contexto: transcrição opcional das últimas mensagens da conversa, para
+            o classificador interpretar respostas curtas em contexto (ex.: "06"
+            como o mês que o agente acabou de perguntar). Quando ausente, o
+            classificador é chamado exatamente como antes.
         classificador: injeção de dependência para testes — função
-            `(texto) -> dict`. Default: `_classificar_via_llm`.
+            `(texto, contexto=...) -> dict`. Default: `_classificar_via_llm`.
 
     Returns:
         `{is_safe, categoria, motivo}`.
@@ -200,7 +222,9 @@ def avaliar_entrada(
         return bloqueio
 
     classificador = classificador or _classificar_via_llm
-    veredito = classificador(texto)
+    # Só repassamos `contexto` quando há algo — mantém compatibilidade com
+    # classificadores injetados que aceitam apenas `(texto)`.
+    veredito = classificador(texto, contexto=contexto) if contexto else classificador(texto)
     logger.info(
         "input_guardrail_classificador categoria=%r is_safe=%s",
         veredito.get("categoria"),

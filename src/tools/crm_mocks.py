@@ -75,6 +75,44 @@ _CHAMADOS: dict[str, list[dict[str, Any]]] = {
     ],
 }
 
+# Notas fiscais da MERCADORIA transportada (não é cobrança/assinatura). Cada NF
+# tem uma posição no ciclo de entrega da Azapfy (expedição → rota → transbordo →
+# entrega) e o status da comprovação de entrega. Indexadas pelo número da NF;
+# `id_cliente` permite não vazar NF de outro cliente (LLM06).
+_NOTAS_FISCAIS: dict[str, dict[str, Any]] = {
+    # Mariana (CLI-1001): uma a caminho, uma já entregue e validada.
+    "NF-1042": {
+        "id_cliente": "CLI-1001",
+        "etapa": "em_rota",
+        "comprovacao": "pendente",
+        "ocorrencia": None,
+        "atualizado_em": "2026-06-15T09:12:00Z",
+    },
+    "NF-1043": {
+        "id_cliente": "CLI-1001",
+        "etapa": "entregue",
+        "comprovacao": "validada",
+        "ocorrencia": None,
+        "atualizado_em": "2026-06-12T17:40:00Z",
+    },
+    # Ricardo (CLI-1002): parada em transbordo por divergência de endereço.
+    "NF-2001": {
+        "id_cliente": "CLI-1002",
+        "etapa": "transbordo",
+        "comprovacao": "pendente",
+        "ocorrencia": "endereco_divergente",
+        "atualizado_em": "2026-06-14T11:05:00Z",
+    },
+    # Júlia (CLI-1003): entregue, mas a comprovação foi rejeitada na auditoria.
+    "NF-3001": {
+        "id_cliente": "CLI-1003",
+        "etapa": "entregue",
+        "comprovacao": "rejeitada",
+        "ocorrencia": "foto_ilegivel",
+        "atualizado_em": "2026-06-10T08:22:00Z",
+    },
+}
+
 
 def _normalizar_telefone(telefone: str) -> str:
     """Mantém apenas os dígitos do telefone (ex.: `(11) 99999-0001` → `11999990001`)."""
@@ -103,17 +141,10 @@ def buscar_cliente_por_telefone(telefone: str) -> dict[str, Any]:
     `id_cliente` retornado é exigido pelas demais tools de CRM.
 
     Args:
-        telefone: Telefone do cliente. Aceita formatos com ou sem máscara
-            (ex.: "11999990001" ou "(11) 99999-0001").
+        telefone: Telefone do cliente, com ou sem máscara.
 
     Returns:
-        Dicionário com:
-          - id_cliente (str): identificador interno do cliente, ou None se
-            o telefone não estiver cadastrado.
-          - nome (str | None)
-          - plano (str | None): "Starter", "Pro" ou "Business".
-          - status_conta (str | None): "ativo", "inadimplente" ou "suspenso".
-          - encontrado (bool): False quando o telefone não está na base.
+        dict: id_cliente, nome, plano, status_conta, encontrado (bool).
     """
     digitos = _normalizar_telefone(telefone)
     cliente = _CLIENTES.get(digitos)
@@ -141,12 +172,8 @@ def verificar_chamados_abertos(id_cliente: str) -> dict[str, Any]:
         id_cliente: Identificador interno do cliente (ex.: "CLI-1001").
 
     Returns:
-        Dicionário com:
-          - id_cliente (str)
-          - total (int)
-          - chamados (list[dict]): cada item tem `id`, `assunto`, `status`
-            ("aberto" | "em_andamento" | "aguardando_cliente") e `criado_em`
-            (ISO 8601 UTC).
+        dict: id_cliente, total (int), chamados (list com id, assunto, status,
+        criado_em).
     """
     chamados = _CHAMADOS.get(id_cliente, [])
     return {
@@ -157,64 +184,45 @@ def verificar_chamados_abertos(id_cliente: str) -> dict[str, Any]:
 
 
 @tool
-def consultar_nota_fiscal(id_cliente: str, mes_referencia: str) -> dict[str, Any]:
-    """Consulta o status da nota fiscal/fatura de um cliente em um mês de referência.
+def rastrear_nota_fiscal(id_cliente: str, numero_nota: str) -> dict[str, Any]:
+    """Rastreia uma nota fiscal (NF da mercadoria) no ciclo de entrega da Azapfy.
 
-    Use para perguntas sobre pagamento, fatura, boleto ou nota fiscal de um
-    período específico. O mês de referência segue o formato "AAAA-MM".
+    Use quando o cliente quiser saber EM QUE PONTO está uma NF específica da qual
+    ele já tem o número: etapa do transporte (expedição → rota → transbordo →
+    entrega), se a comprovação de entrega foi validada/rejeitada e se há ocorrência.
+
+    NÃO use para dúvidas do tipo "como/onde encontro a NF no painel", "a nota não
+    aparece na Pesquisa" ou "como funciona o módulo X" — isso é how-to e vai para
+    `consultar_base_conhecimento`. Esta tool também não trata cobrança/fatura da
+    assinatura Azapfy (a Azapfy não vende isso ao cliente final aqui).
 
     Args:
-        id_cliente: Identificador interno do cliente (ex.: "CLI-1002").
-        mes_referencia: Mês de referência no formato "AAAA-MM" (ex.: "2026-04").
+        id_cliente: Identificador interno do cliente (ex.: "CLI-1001").
+        numero_nota: Número da nota fiscal, ex.: "NF-1042".
 
     Returns:
-        Dicionário com:
-          - id_cliente (str)
-          - mes_referencia (str)
-          - status (str): "pago", "em_aberto" ou "vencido".
-          - valor (float): valor em reais.
-          - vencimento (str): data de vencimento (ISO 8601, AAAA-MM-DD).
-          - encontrado (bool): False se não houver fatura para o mês.
+        dict: numero_nota, etapa ("expedicao"|"em_rota"|"transbordo"|"entregue"),
+        comprovacao ("pendente"|"validada"|"rejeitada"), ocorrencia (str | None),
+        atualizado_em (ISO 8601 UTC), encontrado (bool).
     """
-    if not re.fullmatch(r"\d{4}-\d{2}", mes_referencia or ""):
+    numero = (numero_nota or "").strip().upper()
+    registro = _NOTAS_FISCAIS.get(numero)
+    # Só devolve a NF se ela pertencer ao cliente da sessão — não vaza NF de
+    # outro cliente nem confirma a existência de números alheios (LLM06).
+    if registro is None or registro["id_cliente"] != id_cliente:
         return {
             "id_cliente": id_cliente,
-            "mes_referencia": mes_referencia,
-            "encontrado": False,
-            "erro": "mes_referencia deve estar no formato AAAA-MM",
-        }
-
-    valores_por_plano = {
-        "CLI-1001": 249.90,  # Pro
-        "CLI-1002": 599.00,  # Business
-        "CLI-1003": 99.90,   # Starter
-    }
-    valor = valores_por_plano.get(id_cliente)
-    if valor is None:
-        return {
-            "id_cliente": id_cliente,
-            "mes_referencia": mes_referencia,
+            "numero_nota": numero or numero_nota,
             "encontrado": False,
         }
-
-    ano, mes = (int(p) for p in mes_referencia.split("-"))
-    vencimento = f"{ano:04d}-{mes:02d}-10"
-
-    # 3 variações determinísticas baseadas no id_cliente:
-    # CLI-1001 → pago / CLI-1002 → vencido / CLI-1003 → em_aberto
-    if id_cliente == "CLI-1001":
-        status = "pago"
-    elif id_cliente == "CLI-1002":
-        status = "vencido"
-    else:
-        status = "em_aberto"
 
     return {
         "id_cliente": id_cliente,
-        "mes_referencia": mes_referencia,
-        "status": status,
-        "valor": valor,
-        "vencimento": vencimento,
+        "numero_nota": numero,
+        "etapa": registro["etapa"],
+        "comprovacao": registro["comprovacao"],
+        "ocorrencia": registro["ocorrencia"],
+        "atualizado_em": registro["atualizado_em"],
         "encontrado": True,
     }
 
@@ -234,12 +242,8 @@ def abrir_novo_chamado(id_cliente: str, resumo: str) -> dict[str, Any]:
             (limite de 280 caracteres, sem quebras de linha excessivas).
 
     Returns:
-        Dicionário com:
-          - ticket_id (str)
-          - id_cliente (str)
-          - assunto (str): resumo já sanitizado.
-          - status (str): sempre "aberto" no momento da criação.
-          - criado_em (str): timestamp ISO 8601 UTC.
+        dict: ticket_id, id_cliente, assunto (resumo sanitizado), status
+        ("aberto"), criado_em (ISO 8601 UTC).
     """
     resumo_limpo = (resumo or "").strip()
     resumo_limpo = re.sub(r"\s+", " ", resumo_limpo)
@@ -280,6 +284,6 @@ def abrir_novo_chamado(id_cliente: str, resumo: str) -> dict[str, Any]:
 CRM_TOOLS = [
     buscar_cliente_por_telefone,
     verificar_chamados_abertos,
-    consultar_nota_fiscal,
+    rastrear_nota_fiscal,
     abrir_novo_chamado,
 ]

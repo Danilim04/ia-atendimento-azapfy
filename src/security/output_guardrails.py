@@ -51,7 +51,7 @@ def envolver_dado_externo(
     Args:
         conteudo: texto bruto vindo de RAG, web ou outra tool externa.
         source: identificador de origem (nome do arquivo, URL, etc.).
-        **extra_attrs: atributos opcionais (`pagina=2`, `origem="rag"`, ...).
+        **extra_attrs: atributos opcionais (`secao="..."`, `origem="rag"`, ...).
 
     Returns:
         String pronta para concatenar a uma mensagem que o LLM vai ler.
@@ -66,7 +66,7 @@ def envolver_dado_externo(
 def envolver_chunks_rag(chunks: Iterable[Mapping[str, object]]) -> str:
     """Formata os chunks devolvidos por `consultar_base_conhecimento`.
 
-    Espera dicts no formato `{texto, pagina, source}` (saída da tool RAG).
+    Espera dicts no formato `{texto, secao, source}` (saída da tool RAG).
     Chunks vazios são ignorados.
     """
     blocos: list[str] = []
@@ -76,9 +76,9 @@ def envolver_chunks_rag(chunks: Iterable[Mapping[str, object]]) -> str:
             continue
         source = str(chunk.get("source") or "desconhecido")
         extras: dict[str, object] = {"origem": "rag"}
-        pagina = chunk.get("pagina")
-        if pagina is not None:
-            extras["pagina"] = pagina
+        secao = chunk.get("secao")
+        if secao:
+            extras["secao"] = secao
         blocos.append(envolver_dado_externo(texto, source=source, **extras))
     return "\n\n".join(blocos)
 

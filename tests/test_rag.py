@@ -2,7 +2,7 @@
 
 Usamos embeddings *fake* determinísticos (bag-of-words com hash) para validar
 o pipeline ponta a ponta sem depender de download do `sentence-transformers`
-ou de um PDF real em disco.
+ou das docs reais em disco.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def _build_documents() -> list[Document]:
                 "Configurações > Integrações > Bling. Insira o token da API "
                 "e clique em Salvar. A sincronização ocorre a cada 15 minutos."
             ),
-            metadata={"source": "base.pdf", "page": 0},
+            metadata={"source": "azapfy-web.md", "secao": "Integrações › Bling"},
         ),
         Document(
             page_content=(
@@ -54,7 +54,7 @@ def _build_documents() -> list[Document]:
                 "via painel para que a equipe de suporte responda no próximo "
                 "dia útil."
             ),
-            metadata={"source": "base.pdf", "page": 1},
+            metadata={"source": "azapfy-web.md", "secao": "Suporte › Atendimento"},
         ),
         Document(
             page_content=(
@@ -62,9 +62,41 @@ def _build_documents() -> list[Document]:
                 "vários > Gerar etiquetas. O sistema suporta até 500 pedidos "
                 "por vez. Filtre por transportadora antes de imprimir."
             ),
-            metadata={"source": "base.pdf", "page": 2},
+            metadata={"source": "azapfy-web.md", "secao": "Pedidos › Etiquetas"},
         ),
     ]
+
+
+# ---------------------------------------------------------------------------
+# load_markdown_dir
+# ---------------------------------------------------------------------------
+
+
+def test_load_markdown_dir_extrai_secao_e_source_e_ignora_vazios(tmp_path):
+    from src.rag.ingest import load_markdown_dir
+
+    (tmp_path / "azapfy-web.md").write_text(
+        "# Plataforma Web\n\nIntro.\n\n## Módulo: Pesquisa\n\n"
+        "O coração do backoffice.\n\n### 4.3 Histórico\n\nTracking da nota.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "vazio.md").write_text("   \n", encoding="utf-8")
+
+    docs = load_markdown_dir(tmp_path)
+
+    # Arquivo vazio é ignorado; só o azapfy-web.md vira seções.
+    assert docs, "deveria carregar ao menos uma seção"
+    assert all(d.metadata["source"] == "azapfy-web.md" for d in docs)
+    secoes = {d.metadata["secao"] for d in docs}
+    assert any("Módulo: Pesquisa" in s for s in secoes)
+    assert any("Histórico" in s for s in secoes)
+
+
+def test_load_markdown_dir_sem_arquivos_levanta(tmp_path):
+    from src.rag.ingest import load_markdown_dir
+
+    with pytest.raises(FileNotFoundError):
+        load_markdown_dir(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -80,8 +112,8 @@ def test_split_documents_gera_chunks_e_preserva_metadata():
 
     # chunk_size pequeno → pelo menos 1 chunk por doc, frequentemente mais.
     assert len(chunks) >= len(docs)
-    assert all("page" in c.metadata for c in chunks)
-    assert all(c.metadata.get("source") == "base.pdf" for c in chunks)
+    assert all("secao" in c.metadata for c in chunks)
+    assert all(c.metadata.get("source") == "azapfy-web.md" for c in chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +170,8 @@ def test_consultar_base_conhecimento_pergunta_vazia():
     assert "erro" in out
 
 
-def test_consultar_base_conhecimento_formata_pagina_humana(monkeypatch, chroma_dir):
-    """A tool converte `metadata['page']` (0-indexada) em `pagina` 1-indexada."""
+def test_consultar_base_conhecimento_retorna_secao_e_source(monkeypatch, chroma_dir):
+    """A tool expõe `secao` + `source` de cada chunk para a citação (LLM09)."""
     from src.rag.ingest import persist_chunks, split_documents
     from src.rag.retriever import get_retriever
     from src.tools import rag_tool
@@ -161,9 +193,8 @@ def test_consultar_base_conhecimento_formata_pagina_humana(monkeypatch, chroma_d
     assert out["encontrado"] is True
     assert out["total"] >= 1
     primeiro = out["chunks"][0]
-    assert primeiro["source"] == "base.pdf"
-    # page=0 vira pagina=1
-    assert primeiro["pagina"] in {1, 2, 3}
+    assert primeiro["source"] == "azapfy-web.md"
+    assert isinstance(primeiro["secao"], str) and primeiro["secao"]
     assert isinstance(primeiro["texto"], str) and primeiro["texto"]
 
 

@@ -38,6 +38,22 @@ def _fake_llm(scripted: list[AIMessage] | None = None) -> MagicMock:
     return fake
 
 
+def _texto_de(content: Any) -> str:
+    """Extrai o texto do `content` de uma mensagem.
+
+    O system pode vir como string (modelos Gemini) ou como lista de blocos
+    `{"type": "text", "text": ...}` quando o caching `cache_control` é aplicado
+    (modelos Anthropic). Normalizamos para que os testes valham nos dois casos.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in content
+        )
+    return str(content)
+
+
 def _passa_seguranca(monkeypatch) -> None:
     monkeypatch.setattr(
         nodes,
@@ -61,7 +77,7 @@ def test_entry_node_reseta_seguranca_tentou_rag_e_fontes():
             "telefone": "11999990001",
             "cliente": {"id_cliente": "CLI-1001"},
             "tentou_rag": True,
-            "fontes_usadas": ["base.pdf#p1"],
+            "fontes_usadas": ["azapfy-web.md — Módulo: Pesquisa"],
             "seguranca": {"is_safe": False, "categoria": "malicioso", "motivo": "x"},
         }
     )
@@ -69,6 +85,7 @@ def test_entry_node_reseta_seguranca_tentou_rag_e_fontes():
         "seguranca": None,
         "tentou_rag": False,
         "fontes_usadas": [],
+        "iteracoes_agente": 0,
     }
 
 
@@ -89,6 +106,25 @@ def test_input_guardrail_sem_humana_devolve_safe():
     out = nodes.input_guardrail_node({"messages": [AIMessage(content="oi")]})
     assert out["seguranca"]["is_safe"] is True
     assert "sem mensagem humana" in out["seguranca"]["motivo"]
+
+
+def test_contexto_para_guardrail_formata_dialogo_recente():
+    msgs = [
+        HumanMessage(content="Estou com problema na nota fiscal"),
+        AIMessage(content="", tool_calls=[{"id": "t", "name": "x", "args": {}}]),
+        ToolMessage(content="resultado", tool_call_id="t", name="x"),
+        AIMessage(content="Para qual mês de 2026?"),
+        HumanMessage(content="06"),  # mensagem atual — não entra no contexto
+    ]
+    ctx = nodes._contexto_para_guardrail(msgs)
+    assert "Usuário: Estou com problema na nota fiscal" in ctx
+    assert "Assistente: Para qual mês de 2026?" in ctx
+    assert "resultado" not in ctx  # ToolMessage é ignorada
+
+
+def test_contexto_para_guardrail_sem_anteriores_retorna_none():
+    assert nodes._contexto_para_guardrail([HumanMessage(content="oi")]) is None
+    assert nodes._contexto_para_guardrail([]) is None
 
 
 def test_input_guardrail_avalia_a_ULTIMA_humana(monkeypatch):
@@ -181,7 +217,7 @@ def consultar_base_conhecimento_fake(pergunta: str) -> dict:
         "encontrado": True,
         "total": 1,
         "chunks": [
-            {"texto": "passo 1: faça X", "pagina": 2, "source": "base.pdf"}
+            {"texto": "passo 1: faça X", "secao": "Módulo: Pesquisa", "source": "azapfy-web.md"}
         ],
     }
 
@@ -246,12 +282,12 @@ def test_tools_node_envolve_resultado_rag_em_documento_externo():
     out = tn(state)
     content = out["messages"][0].content
     assert "<documento_externo" in content
-    assert 'source="base.pdf"' in content
-    assert 'pagina="2"' in content
+    assert 'source="azapfy-web.md"' in content
+    assert 'secao="Módulo: Pesquisa"' in content
     assert 'origem="rag"' in content
     assert "passo 1: faça X" in content
     assert out["tentou_rag"] is True
-    assert out["fontes_usadas"] == ["base.pdf#p2"]
+    assert out["fontes_usadas"] == ["azapfy-web.md — Módulo: Pesquisa"]
 
 
 def test_tools_node_envolve_resultado_web_e_registra_url():
@@ -337,7 +373,7 @@ def test_agent_node_injeta_system_prompt_com_dados_do_cliente():
 
     chamada_msgs = fake.invoke.call_args.args[0]
     assert isinstance(chamada_msgs[0], SystemMessage)
-    sp = chamada_msgs[0].content
+    sp = _texto_de(chamada_msgs[0].content)
     assert "Azapfy" in sp
     assert "Mariana Souza" in sp
     assert "CLI-1001" in sp
@@ -354,7 +390,7 @@ def test_agent_node_avisa_quando_cliente_nao_encontrado():
     }
     agent(state)
 
-    sp = fake.invoke.call_args.args[0][0].content
+    sp = _texto_de(fake.invoke.call_args.args[0][0].content)
     assert "11000000000" in sp
     assert "NÃO localizado" in sp
 
@@ -367,6 +403,75 @@ def test_agent_node_devolve_aimessage_no_messages():
     assert len(out["messages"]) == 1
     assert isinstance(out["messages"][0], AIMessage)
     assert out["messages"][0].content == "resposta"
+
+
+def test_agent_node_incrementa_iteracoes():
+    fake = _fake_llm(scripted=[AIMessage(content="r1"), AIMessage(content="r2")])
+    agent = nodes.make_agent_node(fake, [])
+
+    out1 = agent({"messages": [HumanMessage(content="oi")]})
+    assert out1["iteracoes_agente"] == 1
+    out2 = agent({"messages": [HumanMessage(content="oi")], "iteracoes_agente": 1})
+    assert out2["iteracoes_agente"] == 2
+
+
+# ===========================================================================
+# Poda de histórico — _podar_historico
+# ===========================================================================
+
+
+def test_podar_historico_stuba_toolmessage_de_turnos_anteriores():
+    msgs = [
+        HumanMessage(content="primeira pergunta"),
+        AIMessage(content="", tool_calls=[{"id": "tc1", "name": "rag", "args": {}}]),
+        ToolMessage(
+            content="conteudo enorme do RAG antigo", tool_call_id="tc1", name="rag"
+        ),
+        AIMessage(content="resposta do turno 1"),
+        HumanMessage(content="segunda pergunta"),  # início do turno atual
+        AIMessage(content="", tool_calls=[{"id": "tc2", "name": "rag", "args": {}}]),
+        ToolMessage(
+            content="conteudo fresco do RAG atual", tool_call_id="tc2", name="rag"
+        ),
+    ]
+    podadas = nodes._podar_historico(msgs)
+
+    # ToolMessage do turno anterior virou stub; a do turno atual ficou intacta.
+    assert podadas[2].content == nodes._STUB_TOOL_ANTERIOR
+    assert podadas[2].tool_call_id == "tc1"
+    assert podadas[-1].content == "conteudo fresco do RAG atual"
+    # Não muta a lista original.
+    assert msgs[2].content == "conteudo enorme do RAG antigo"
+
+
+def test_podar_historico_sem_humana_devolve_intacto():
+    msgs = [AIMessage(content="oi")]
+    assert nodes._podar_historico(msgs) == msgs
+
+
+# ===========================================================================
+# Caching model-aware — _modelo_suporta_cache_control / _aplicar_cache_control
+# ===========================================================================
+
+
+def test_modelo_suporta_cache_control_so_para_anthropic():
+    assert nodes._modelo_suporta_cache_control("anthropic/claude-haiku-4.5") is True
+    assert nodes._modelo_suporta_cache_control("google/gemini-2.5-flash") is False
+    assert nodes._modelo_suporta_cache_control("") is False
+
+
+def test_aplicar_cache_control_marca_system_e_ultima_sem_mutar():
+    system = SystemMessage(content="prompt do sistema")
+    humana = HumanMessage(content="pergunta")
+    saida = nodes._aplicar_cache_control([system, humana])
+
+    # System vira bloco com cache_control.
+    bloco_sys = saida[0].content
+    assert isinstance(bloco_sys, list)
+    assert bloco_sys[0]["cache_control"] == {"type": "ephemeral"}
+    # Última mensagem também marcada, via cópia (original não mutado).
+    assert isinstance(saida[-1].content, list)
+    assert humana.content == "pergunta"
 
 
 # ===========================================================================
@@ -497,4 +602,4 @@ def test_grafo_e2e_acumula_fontes_quando_rag_e_chamado(monkeypatch):
     )
 
     assert out["tentou_rag"] is True
-    assert out["fontes_usadas"] == ["base.pdf#p2"]
+    assert out["fontes_usadas"] == ["azapfy-web.md — Módulo: Pesquisa"]

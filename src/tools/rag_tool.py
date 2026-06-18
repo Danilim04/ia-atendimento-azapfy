@@ -12,27 +12,19 @@ from src.rag.retriever import get_retriever
 
 @tool
 def consultar_base_conhecimento(pergunta: str) -> dict[str, Any]:
-    """Consulta a base de conhecimento técnico interna da Azapfy (PDF indexado).
+    """Consulta a base de conhecimento técnico interna da Azapfy (docs indexadas).
 
-    Use SEMPRE esta tool ANTES de tentar `buscar_na_web_azapfy` — é a fonte
-    de verdade primária para dúvidas operacionais e técnicas sobre os
-    produtos Azapfy. Retorna trechos relevantes do PDF de conhecimento,
-    cada um com a página de origem para que a resposta possa citar a fonte.
-
-    Se o resultado vier vazio (`encontrado=False`) ou claramente irrelevante
-    para a pergunta, aí sim recorra à busca na web como fallback.
+    Fonte de verdade primária para dúvidas técnicas/operacionais sobre os
+    produtos Azapfy (plataforma Web, app do motorista, módulos, mercado) — use
+    ANTES de `buscar_na_web_azapfy`. Faça apenas UMA consulta por turno; se vier
+    vazia (`encontrado=False`) ou irrelevante, recorra à web como fallback.
 
     Args:
         pergunta: Pergunta do usuário em linguagem natural (em português).
 
     Returns:
-        Dicionário com:
-          - encontrado (bool): True se houve ao menos um chunk retornado.
-          - total (int): número de chunks devolvidos.
-          - chunks (list[dict]): cada item tem
-              - texto (str): trecho do PDF.
-              - pagina (int | None): página humana (1-indexada) do PDF.
-              - source (str): nome do arquivo PDF de origem.
+        dict: encontrado (bool), total (int), chunks (list com texto, secao,
+        source) para citar a fonte.
     """
     pergunta = (pergunta or "").strip()
     if not pergunta:
@@ -57,11 +49,10 @@ def consultar_base_conhecimento(pergunta: str) -> dict[str, Any]:
 
     chunks = []
     for d in docs:
-        page = d.metadata.get("page")
         chunks.append(
             {
                 "texto": d.page_content,
-                "pagina": (page + 1) if isinstance(page, int) else None,
+                "secao": d.metadata.get("secao") or None,
                 "source": d.metadata.get("source", "desconhecido"),
             }
         )
