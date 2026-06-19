@@ -222,25 +222,8 @@ def consultar_base_conhecimento_fake(pergunta: str) -> dict:
     }
 
 
-@tool
-def buscar_na_web_azapfy_fake(query: str) -> dict:
-    """Fake da web, mesmo nome da tool real."""
-    return {
-        "encontrado": True,
-        "total": 1,
-        "resultados": [
-            {
-                "url": "https://azapfy.com.br/x",
-                "title": "T",
-                "content": "C",
-            }
-        ],
-    }
-
-
 # Para ser pego pelo `tools_by_name`, precisamos do nome canônico:
 consultar_base_conhecimento_fake.name = "consultar_base_conhecimento"
-buscar_na_web_azapfy_fake.name = "buscar_na_web_azapfy"
 
 
 def test_tools_node_executa_tool_simples_e_retorna_toolmessage():
@@ -288,29 +271,6 @@ def test_tools_node_envolve_resultado_rag_em_documento_externo():
     assert "passo 1: faça X" in content
     assert out["tentou_rag"] is True
     assert out["fontes_usadas"] == ["azapfy-web.md — Módulo: Pesquisa"]
-
-
-def test_tools_node_envolve_resultado_web_e_registra_url():
-    tn = nodes.make_tools_node([buscar_na_web_azapfy_fake])
-    state = {
-        "messages": [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "tc1",
-                        "name": "buscar_na_web_azapfy",
-                        "args": {"query": "x"},
-                    }
-                ],
-            )
-        ]
-    }
-    out = tn(state)
-    content = out["messages"][0].content
-    assert 'origem="web"' in content
-    assert 'source="https://azapfy.com.br/x"' in content
-    assert out["fontes_usadas"] == ["https://azapfy.com.br/x"]
 
 
 def test_tools_node_tool_desconhecida_retorna_erro_em_toolmessage():

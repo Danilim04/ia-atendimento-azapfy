@@ -30,10 +30,7 @@ from src.agent.prompts import RESPOSTA_OFF_TOPIC, SYSTEM_PROMPT_AGENTE
 from src.agent.state import AgentState
 from src.config import get_settings
 from src.security.input_guardrails import avaliar_entrada
-from src.security.output_guardrails import (
-    envolver_chunks_rag,
-    envolver_resultados_web,
-)
+from src.security.output_guardrails import envolver_chunks_rag
 
 
 logger = logging.getLogger(__name__)
@@ -291,19 +288,12 @@ def _registrar_fontes_rag(chunks: Iterable[dict], fontes: list[str]) -> None:
             fontes.append(rotulo)
 
 
-def _registrar_fontes_web(resultados: Iterable[dict], fontes: list[str]) -> None:
-    for r in resultados or []:
-        url = r.get("url")
-        if url and url not in fontes:
-            fontes.append(url)
-
-
 def make_tools_node(tools: list[BaseTool]) -> Callable[[AgentState], dict]:
     """Executa as tool_calls do último AIMessage e devolve `ToolMessage`s.
 
-    - RAG (`consultar_base_conhecimento`) e Web (`buscar_na_web_azapfy`)
-      têm o conteúdo embrulhado em `<documento_externo>` (Épico 6, LLM01
-      indireta) antes de virar `ToolMessage.content`.
+    - RAG (`consultar_base_conhecimento`) tem o conteúdo embrulhado em
+      `<documento_externo>` (Épico 6, LLM01 indireta) antes de virar
+      `ToolMessage.content`.
     - Atualiza `tentou_rag` / `fontes_usadas` para auditabilidade (LLM09).
     """
     tools_by_name = {t.name: t for t in tools}
@@ -347,14 +337,6 @@ def make_tools_node(tools: list[BaseTool]) -> Callable[[AgentState], dict]:
                     chunks = resultado.get("chunks") or []
                     _registrar_fontes_rag(chunks, fontes_usadas)
                     embrulhado = envolver_chunks_rag(chunks)
-                    content = embrulhado or json.dumps(resultado, ensure_ascii=False)
-                else:
-                    content = json.dumps(resultado, ensure_ascii=False)
-            elif nome == "buscar_na_web_azapfy":
-                if isinstance(resultado, dict) and resultado.get("encontrado"):
-                    resultados = resultado.get("resultados") or []
-                    _registrar_fontes_web(resultados, fontes_usadas)
-                    embrulhado = envolver_resultados_web(resultados)
                     content = embrulhado or json.dumps(resultado, ensure_ascii=False)
                 else:
                     content = json.dumps(resultado, ensure_ascii=False)

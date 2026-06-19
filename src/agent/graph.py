@@ -35,12 +35,11 @@ from src.agent.nodes import (
 from src.agent.state import AgentState
 from src.tools.crm_mocks import CRM_TOOLS
 from src.tools.rag_tool import consultar_base_conhecimento
-from src.tools.web_search import buscar_na_web_azapfy
 
 
 def get_default_tools() -> list[BaseTool]:
-    """Tools canônicas: CRM (4) + RAG (1) + Web (1)."""
-    return [*CRM_TOOLS, consultar_base_conhecimento, buscar_na_web_azapfy]
+    """Tools canônicas: CRM (4) + RAG (1). O agente não acessa a internet."""
+    return [*CRM_TOOLS, consultar_base_conhecimento]
 
 
 def build_graph(

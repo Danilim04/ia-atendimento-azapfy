@@ -6,13 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 POC de agente de **suporte técnico da Azapfy**: um chatbot que identifica o
 cliente por telefone, responde dúvidas usando uma base de conhecimento local
-(RAG sobre as docs Markdown em `docs/*.md`), faz fallback para busca web restrita a
-`azapfy.com.br`, consulta/abre chamados num CRM mockado, e se defende contra
-prompt injection (OWASP LLM Top 10).
+(RAG sobre as docs Markdown em `docs/*.md`), consulta/abre chamados num CRM
+mockado, e se defende contra prompt injection (OWASP LLM Top 10). O agente
+**não tem acesso à internet**: a base de conhecimento local é a única fonte
+externa; quando ela não cobre o assunto, o agente oferece abrir um chamado.
 
 Stack: **LangGraph + LangChain** (orquestração), **OpenRouter** (gateway de
-LLM), **ChromaDB** + embeddings locais (RAG), **Tavily** (web), **Chainlit**
-(UI). Roadmap detalhado em `plano_de_execucao.md`.
+LLM), **ChromaDB** + embeddings locais (RAG), **Chainlit** (UI). Roadmap
+detalhado em `plano_de_execucao.md`.
 
 ## Comandos
 
@@ -20,7 +21,7 @@ LLM), **ChromaDB** + embeddings locais (RAG), **Tavily** (web), **Chainlit**
 # Setup (uma vez)
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # preencher OPENROUTER_API_KEY e TAVILY_API_KEY
+cp .env.example .env          # preencher OPENROUTER_API_KEY
 
 # Ingerir o PDF no ChromaDB (obrigatório antes de rodar a app)
 python -m src.rag.ingest      # opcional: --docs-dir docs --persist-dir ./chroma_db
@@ -55,16 +56,16 @@ entry → input_guardrail → (safe?) → agent ⇄ tools → output_guardrail �
   - `nodes.py`: nós como **fábricas com injeção de dependência**
     (`make_agent_node(llm, tools)`, `make_tools_node(tools)`) — facilita testar
     sem rede. `agent_node` chama o LLM com `[system] + histórico`; `tools_node`
-    executa as tools e embrulha resultados de RAG/web em `<documento_externo>`.
+    executa as tools e embrulha resultados do RAG em `<documento_externo>`.
   - `llm.py`: fábricas `get_llm()` (agente, tool-calling), `get_classifier_llm()`
     (classificador) e `get_embeddings()` (local). Tudo via `ChatOpenAI`
     apontando para o OpenRouter; clientes `@lru_cache`-ados.
   - `prompts.py`: `SYSTEM_PROMPT_AGENTE` (blindado), `SYSTEM_PROMPT_CLASSIFICADOR`,
     `RESPOSTA_OFF_TOPIC`.
-- **`src/tools/`** — `crm_mocks.py` (4 tools de CRM, dados em dicts no módulo),
-  `rag_tool.py` (`consultar_base_conhecimento`), `web_search.py`
-  (`buscar_na_web_azapfy`, restrita ao domínio). `get_default_tools()` em
-  `graph.py` é a lista canônica.
+- **`src/tools/`** — `crm_mocks.py` (4 tools de CRM, dados em dicts no módulo) e
+  `rag_tool.py` (`consultar_base_conhecimento`). `get_default_tools()` em
+  `graph.py` é a lista canônica. **Não há tool de busca web** — o agente não
+  acessa a internet.
 - **`src/rag/`** — `ingest.py` (docs Markdown → chunks por seção → ChromaDB persistido) e
   `retriever.py` (reabre o store, `get_retriever(k=...)`).
 - **`src/security/`** — `input_guardrails.py` (2 camadas: heurística regex →
@@ -86,7 +87,7 @@ documentado: `anthropic/claude-haiku-4.5`. Embeddings são **locais**
   curto-circuito; senão chama o classificador LLM (`suporte`/`off_topic`/
   `malicioso`). O classificador é **fail-open** (erro → trata como `suporte`) e
   recebe um contexto curto da conversa para interpretar respostas curtas.
-- **Output**: todo conteúdo de tool/RAG/web é embrulhado em
+- **Output**: todo conteúdo de tool/RAG é embrulhado em
   `<documento_externo>` com escape de `<`,`>`,`&` — é o que impede injeção
   indireta (LLM01) de fechar o container ou injetar tags `<system>`.
 - O system prompt instrui que tudo dentro de `<documento_externo>` é **DADO,
@@ -121,9 +122,9 @@ documentado: `anthropic/claude-haiku-4.5`. Embeddings são **locais**
 - **`abrir_novo_chamado` tem efeito colateral** (LLM08): exige confirmação
   explícita do usuário antes da chamada. Os mocks de CRM guardam estado em
   dicts no módulo; o `conftest.py` faz snapshot/restore entre testes.
-- **Política de tools**: RAG (`consultar_base_conhecimento`) é fonte primária;
-  web (`buscar_na_web_azapfy`) só como fallback e sempre restrita a
-  `azapfy.com.br` (filtro aplicado fora do controle do LLM).
+- **Política de tools**: RAG (`consultar_base_conhecimento`) é a fonte externa
+  primária e única. O agente **não acessa a internet**; se a base não cobrir o
+  assunto, ele responde com o que tem ou oferece abrir um chamado.
 - **Mudar `rag_chunk_size`/`rag_chunk_overlap` exige re-ingestão**
   (`python -m src.rag.ingest`); mudar `rag_top_k` não (é parâmetro de query).
 - **Testes não devem fazer chamadas de rede** por padrão — injete LLM/tools

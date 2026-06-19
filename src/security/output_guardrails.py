@@ -1,7 +1,7 @@
 """Output guardrails — defesa contra prompt injection indireta (LLM01 indireta).
 
-Tudo que vem de fonte externa (RAG, web search, qualquer tool com texto livre)
-passa por este módulo ANTES de ser injetado em uma mensagem que vai para o LLM.
+Tudo que vem de fonte externa (RAG ou qualquer tool com texto livre) passa por
+este módulo ANTES de ser injetado em uma mensagem que vai para o LLM.
 
 Estratégia:
 
@@ -80,27 +80,4 @@ def envolver_chunks_rag(chunks: Iterable[Mapping[str, object]]) -> str:
         if secao:
             extras["secao"] = secao
         blocos.append(envolver_dado_externo(texto, source=source, **extras))
-    return "\n\n".join(blocos)
-
-
-def envolver_resultados_web(resultados: Iterable[Mapping[str, object]]) -> str:
-    """Formata os resultados devolvidos por `buscar_na_web_azapfy`.
-
-    Espera dicts `{url, title, content}`. Itens sem `content` são ignorados.
-    """
-    blocos: list[str] = []
-    for item in resultados:
-        content = item.get("content")
-        if not content:
-            continue
-        url = str(item.get("url") or "desconhecida")
-        title = str(item.get("title") or "")
-        blocos.append(
-            envolver_dado_externo(
-                content,
-                source=url,
-                title=title,
-                origem="web",
-            )
-        )
     return "\n\n".join(blocos)

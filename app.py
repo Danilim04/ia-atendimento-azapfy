@@ -5,7 +5,7 @@ Como rodar:
     chainlit run app.py -w
 
 Pré-requisitos:
-- `.env` com `OPENROUTER_API_KEY` e `TAVILY_API_KEY` reais.
+- `.env` com `OPENROUTER_API_KEY` real.
 - `python -m src.rag.ingest` já executado (ChromaDB populado).
 
 Fluxo:
@@ -16,7 +16,7 @@ Fluxo:
    tokens do LLM via `astream_events(version="v2")`.
 3. Comando `/trocar-telefone` reabre o pedido para simular outra
    identidade na mesma sessão.
-4. As fontes consultadas (página do PDF para RAG, URL para web) são
+4. As fontes consultadas (arquivo e seção das docs do RAG) são
    exibidas após cada resposta — auditabilidade (LLM09).
 """
 

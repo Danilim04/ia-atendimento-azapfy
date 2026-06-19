@@ -14,10 +14,11 @@ from src.rag.retriever import get_retriever
 def consultar_base_conhecimento(pergunta: str) -> dict[str, Any]:
     """Consulta a base de conhecimento técnico interna da Azapfy (docs indexadas).
 
-    Fonte de verdade primária para dúvidas técnicas/operacionais sobre os
-    produtos Azapfy (plataforma Web, app do motorista, módulos, mercado) — use
-    ANTES de `buscar_na_web_azapfy`. Faça apenas UMA consulta por turno; se vier
-    vazia (`encontrado=False`) ou irrelevante, recorra à web como fallback.
+    Fonte de verdade primária (e única) para dúvidas técnicas/operacionais sobre
+    os produtos Azapfy (plataforma Web, app do motorista, módulos, mercado). Faça
+    apenas UMA consulta por turno; se vier vazia (`encontrado=False`) ou
+    irrelevante, responda com o que tem ou ofereça abrir um chamado — o agente
+    não tem acesso à internet.
 
     Args:
         pergunta: Pergunta do usuário em linguagem natural (em português).

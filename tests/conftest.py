@@ -23,7 +23,6 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
-os.environ.setdefault("TAVILY_API_KEY", "test-tavily-key")
 
 
 @pytest.fixture(autouse=True)

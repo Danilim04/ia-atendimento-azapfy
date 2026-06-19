@@ -26,8 +26,6 @@ class Settings(BaseSettings):
     app_referer: str = Field("http://localhost:8000", alias="APP_REFERER")
     app_title: str = Field("Azapfy Suporte IA", alias="APP_TITLE")
 
-    tavily_api_key: str = Field(..., alias="TAVILY_API_KEY")
-
     chroma_persist_dir: Path = Field(
         Path("./chroma_db"), alias="CHROMA_PERSIST_DIR"
     )

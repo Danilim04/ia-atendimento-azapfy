@@ -9,7 +9,6 @@ Cobertura:
   1. Login com telefone → saudação nominal.
   2. Pergunta operacional → chama tool CRM correta.
   3. Pergunta técnica → consulta RAG primeiro, cita página.
-  4. RAG vazio → fallback para Tavily restrito a azapfy.com.br.
   5. Jailbreak → resposta padrão off-topic, LLM não é chamado.
   6. Indirect injection no PDF → tags impostoras escapadas.
   7. Pedido de abertura de chamado → confirmação humana exigida (LLM08).
@@ -205,7 +204,7 @@ def test_cenario_3_pergunta_tecnica_consulta_rag_e_registra_secao(monkeypatch):
 
 
 # ===========================================================================
-# Cenário 4 — RAG vazio → fallback para Tavily (site:azapfy.com.br)
+# Cenário 4 — RAG vazio → agente responde sem web (sem acesso à internet)
 # ===========================================================================
 
 
@@ -218,26 +217,9 @@ def _rag_vazio(pergunta: str) -> dict:
 _rag_vazio.name = "consultar_base_conhecimento"
 
 
-@tool
-def _web_com_resultado(query: str) -> dict:
-    """Web fake (cenário 4) que devolve URL azapfy.com.br."""
-    return {
-        "encontrado": True,
-        "total": 1,
-        "resultados": [
-            {
-                "url": "https://azapfy.com.br/atendimento",
-                "title": "Atendimento",
-                "content": "Horário: seg a sex, 8h às 18h.",
-            }
-        ],
-    }
-
-
-_web_com_resultado.name = "buscar_na_web_azapfy"
-
-
-def test_cenario_4_rag_vazio_aciona_fallback_para_web_azapfy(monkeypatch):
+def test_cenario_4_rag_vazio_responde_sem_acessar_internet(monkeypatch):
+    """Sem a tool de web, o RAG vazio leva o agente a responder com o que tem
+    (ou oferecer chamado) — nunca a buscar na internet."""
     _passa_seguranca(monkeypatch)
     fake = _fake_llm(
         scripted=[
@@ -252,27 +234,17 @@ def test_cenario_4_rag_vazio_aciona_fallback_para_web_azapfy(monkeypatch):
                     }
                 ],
             ),
-            # RAG vazio → fallback Web
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "tc2",
-                        "name": "buscar_na_web_azapfy",
-                        "args": {"query": "horário de atendimento"},
-                    }
-                ],
-            ),
+            # RAG vazio → responde sem web, oferece abrir chamado
             AIMessage(
                 content=(
-                    "Atendimento de seg a sex das 8h às 18h. "
-                    "Fonte: https://azapfy.com.br/atendimento"
+                    "Não encontrei isso na base. Posso abrir um chamado para "
+                    "o time confirmar o horário de atendimento?"
                 )
             ),
         ]
     )
 
-    g = build_graph(llm=fake, tools=[_rag_vazio, _web_com_resultado])
+    g = build_graph(llm=fake, tools=[_rag_vazio])
     out = g.invoke(
         {
             "telefone": "11999990001",
@@ -283,15 +255,13 @@ def test_cenario_4_rag_vazio_aciona_fallback_para_web_azapfy(monkeypatch):
         config={"configurable": {"thread_id": "11999990001"}},
     )
 
-    # RAG foi tentado, mas a fonte usada veio da web
     assert out["tentou_rag"] is True
-    assert "https://azapfy.com.br/atendimento" in out["fontes_usadas"]
-
+    # Nenhuma fonte web foi registrada — o agente não tem acesso à internet
+    assert out["fontes_usadas"] == []
     tool_msgs = [m for m in out["messages"] if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
     assert tool_msgs[0].name == "consultar_base_conhecimento"
-    assert tool_msgs[1].name == "buscar_na_web_azapfy"
-    assert 'origem="web"' in tool_msgs[1].content
-    assert 'source="https://azapfy.com.br/atendimento"' in tool_msgs[1].content
+    assert "chamado" in out["messages"][-1].content.lower()
 
 
 # ===========================================================================
