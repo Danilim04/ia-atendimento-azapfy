@@ -10,8 +10,9 @@ Pré-requisitos:
 
 Fluxo:
 1. `on_chat_start` pede o **telefone** do usuário (simula a injeção do
-   header de telefone que existiria na integração real). Identifica o
-   cliente via `buscar_cliente_por_telefone` e exibe saudação.
+   header de telefone que existiria na integração real). Resolve a
+   **identidade** via mock de dev (`resolver_identidade_dev`, no formato do
+   Contrato A que o gate Go entregará) e exibe saudação.
 2. Cada mensagem é processada pelo grafo (Épico 7), com streaming de
    tokens do LLM via `astream_events(version="v2")`.
 3. Comando `/trocar-telefone` reabre o pedido para simular outra
@@ -29,7 +30,7 @@ import chainlit as cl
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.agent.graph import build_graph
-from src.tools.crm_mocks import buscar_cliente_por_telefone
+from src.tools.identidade_mock import resolver_identidade_dev
 
 
 logger = logging.getLogger(__name__)
@@ -58,26 +59,26 @@ def _get_graph():
 # ---------------------------------------------------------------------------
 
 
-def saudacao_para_cliente(cliente: Any) -> str:
-    """Mensagem de boas-vindas a partir do retorno de `buscar_cliente_por_telefone`."""
-    if not isinstance(cliente, dict):
+def saudacao_para_identidade(identidade: Any) -> str:
+    """Mensagem de boas-vindas a partir do perfil mínimo (formato do Contrato A)."""
+    if not isinstance(identidade, dict):
         return "Olá! Como posso ajudar com o suporte técnico Azapfy?"
 
-    if cliente.get("encontrado"):
-        nome = cliente.get("nome") or "cliente"
-        plano = cliente.get("plano") or "—"
-        status = cliente.get("status_conta") or "—"
+    if identidade.get("encontrado"):
+        nome = identidade.get("nome") or "usuário"
+        empresas = identidade.get("empresas") or []
+        nomes_emp = ", ".join(e.get("grupo_empresa", "—") for e in empresas) or "—"
         return (
-            f"Olá, **{nome}**! Identifiquei sua conta "
-            f"(plano **{plano}**, status **{status}**). "
+            f"Olá, **{nome}**! Identifiquei seu acesso "
+            f"(empresas: **{nomes_emp}**). "
             "Como posso ajudar com o suporte técnico Azapfy hoje?"
         )
 
     return (
-        "Não encontrei nenhum cliente com esse telefone no nosso CRM. "
-        "Posso responder dúvidas gerais sobre o suporte Azapfy, mas ações "
-        "como abertura de chamado e consulta de fatura precisam de uma "
-        f"conta identificada. Use `{COMANDO_TROCAR_TELEFONE}` para tentar outro número."
+        "Não consegui identificar seu acesso por esse telefone. Posso responder "
+        "dúvidas gerais sobre o suporte Azapfy, mas consultas à sua conta "
+        "precisam de identificação. Informe seu **login** ou use "
+        f"`{COMANDO_TROCAR_TELEFONE}` para tentar outro número."
     )
 
 
@@ -129,12 +130,12 @@ async def _pedir_telefone() -> str:
     return extrair_texto_resposta_ask(res)
 
 
-async def _identificar_cliente_e_saudar(telefone: str) -> dict:
-    cliente = buscar_cliente_por_telefone.invoke({"telefone": telefone})
+async def _identificar_e_saudar(telefone: str) -> dict:
+    identidade = resolver_identidade_dev(telefone)
     cl.user_session.set("telefone", telefone)
-    cl.user_session.set("cliente", cliente)
-    await cl.Message(content=saudacao_para_cliente(cliente)).send()
-    return cliente
+    cl.user_session.set("identidade", identidade)
+    await cl.Message(content=saudacao_para_identidade(identidade)).send()
+    return identidade
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +154,7 @@ async def on_chat_start():
             ),
         ).send()
         return
-    await _identificar_cliente_e_saudar(telefone)
+    await _identificar_e_saudar(telefone)
 
 
 @cl.on_message
@@ -167,7 +168,7 @@ async def on_message(message: cl.Message):
         if not novo:
             await cl.Message(content="Nenhum telefone informado.").send()
             return
-        await _identificar_cliente_e_saudar(novo)
+        await _identificar_e_saudar(novo)
         return
 
     telefone = cl.user_session.get("telefone")
@@ -180,11 +181,11 @@ async def on_message(message: cl.Message):
         ).send()
         return
 
-    cliente = cl.user_session.get("cliente")
+    identidade = cl.user_session.get("identidade")
     config = {"configurable": {"thread_id": telefone}}
     inputs = {
         "telefone": telefone,
-        "cliente": cliente,
+        "identidade": identidade,
         "messages": [HumanMessage(content=texto)],
     }
 

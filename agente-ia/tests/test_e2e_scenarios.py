@@ -21,15 +21,15 @@ from unittest.mock import MagicMock
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from app import saudacao_para_cliente
+from app import saudacao_para_identidade
 from src.agent import nodes, prompts
 from src.agent.graph import build_graph
 from src.tools.crm_mocks import (
     abrir_novo_chamado,
-    buscar_cliente_por_telefone,
     rastrear_nota_fiscal,
     verificar_chamados_abertos,
 )
+from src.tools.identidade_mock import resolver_identidade_dev
 
 
 # ---------------------------------------------------------------------------
@@ -63,20 +63,20 @@ def _passa_seguranca(monkeypatch) -> None:
 
 
 def test_cenario_1_login_com_telefone_conhecido_gera_saudacao_personalizada():
-    cliente = buscar_cliente_por_telefone.invoke({"telefone": "11999990001"})
-    assert cliente["encontrado"] is True
+    identidade = resolver_identidade_dev("11999990001")
+    assert identidade["encontrado"] is True
 
-    saudacao = saudacao_para_cliente(cliente)
-    assert cliente["nome"] in saudacao
-    assert cliente["plano"] in saudacao
+    saudacao = saudacao_para_identidade(identidade)
+    assert identidade["nome"] in saudacao
+    assert identidade["empresas"][0]["grupo_empresa"] in saudacao
     assert "Azapfy" in saudacao
 
 
 def test_cenario_1_telefone_desconhecido_oferece_trocar():
-    cliente = buscar_cliente_por_telefone.invoke({"telefone": "11000000000"})
-    assert cliente["encontrado"] is False
+    identidade = resolver_identidade_dev("11000000000")
+    assert identidade["encontrado"] is False
 
-    saudacao = saudacao_para_cliente(cliente)
+    saudacao = saudacao_para_identidade(identidade)
     assert "/trocar-telefone" in saudacao
 
 
@@ -116,12 +116,18 @@ def test_cenario_2_pergunta_chamados_dispara_a_tool_correta(monkeypatch):
     out = g.invoke(
         {
             "telefone": "11999990003",
-            "cliente": {
+            "identidade": {
                 "encontrado": True,
-                "id_cliente": "CLI-1003",
+                "login": "10596693664",
                 "nome": "Pedro",
-                "plano": "Business",
-                "status_conta": "ativo",
+                "empresas": [
+                    {
+                        "grupo_empresa": "AZAPERS",
+                        "grupo_user": "COLABORADOR",
+                        "area": "SAC",
+                        "bases": [],
+                    }
+                ],
             },
             "messages": [HumanMessage(content="Tenho chamados abertos?")],
         },
@@ -416,12 +422,18 @@ def test_cenario_7_fluxo_dois_turnos_aberto_so_apos_confirmacao(monkeypatch):
 
     estado_inicial = {
         "telefone": "11999990001",
-        "cliente": {
+        "identidade": {
             "encontrado": True,
-            "id_cliente": "CLI-1001",
+            "login": "10596693664",
             "nome": "Mariana Souza",
-            "plano": "Pro",
-            "status_conta": "ativo",
+            "empresas": [
+                {
+                    "grupo_empresa": "AZAPERS",
+                    "grupo_user": "COLABORADOR",
+                    "area": "SAC",
+                    "bases": [],
+                }
+            ],
         },
         "messages": [
             HumanMessage(content="abre um chamado: sistema fora do ar")

@@ -1,0 +1,130 @@
+// Command bot é o gateway Chatwoot da Azapfy: recebe os webhooks, resolve a
+// identidade do usuário (gate) e encaminha as mensagens já autenticadas ao
+// cérebro Python (Contrato A). As tools de dados (MCP) ficam para a fase
+// seguinte.
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"bot-azapfy/internal/brain"
+	"bot-azapfy/internal/chatwoot"
+	"bot-azapfy/internal/config"
+	"bot-azapfy/internal/engine"
+	"bot-azapfy/internal/identity"
+	"bot-azapfy/internal/mongo"
+	"bot-azapfy/internal/store"
+	"bot-azapfy/internal/webhook"
+)
+
+func main() {
+	bootLog := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	cfg, err := config.Load()
+	if err != nil {
+		bootLog.Error("config inválida", "err", err)
+		os.Exit(1)
+	}
+
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLogLevel(cfg.LogLevel)}))
+	slog.SetDefault(log)
+	log.Info("log inicializado", "level", cfg.LogLevel)
+
+	st, err := store.NewSQLite(cfg.DBPath)
+	if err != nil {
+		log.Error("abrir store", "err", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	repo, err := mongo.NewRepo(ctx, cfg.MongoURI, cfg.MongoDB, cfg.MongoCollection, cfg.MongoTimeout)
+	if err != nil {
+		log.Error("conectar ao Mongo", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = repo.Close(shutdownCtx)
+	}()
+
+	cw := chatwoot.NewClient(cfg.ChatwootBaseURL, cfg.ChatwootAccountID, cfg.ChatwootAPIToken)
+	brainClient := brain.NewClient(cfg.BrainBaseURL, cfg.BrainTimeout)
+	gate := identity.New(st, repo, cfg.ConfirmField, cfg.MaxTentativas, cfg.IdentityTTL, log)
+	eng := engine.New(cfg, cw, gate, brainClient, log)
+
+	if cfg.WebhookSecret == "" && cfg.WebhookToken == "" {
+		log.Warn("webhook SEM autenticação: defina WEBHOOK_TOKEN (?token=...) ou WEBHOOK_SECRET")
+	}
+	log.Info("configure este URL no webhook do Chatwoot", "url", webhookURL(cfg), "brain", cfg.BrainBaseURL)
+	srv := webhook.NewServer(cfg.WebhookSecret, cfg.WebhookToken, st, eng, log, 4, 256)
+	go srv.Start(ctx)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webhook", srv.ServeHTTP)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	httpServer := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		log.Info("servidor iniciado", "port", cfg.Port)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("http server", "err", err)
+			stop()
+		}
+	}()
+
+	<-ctx.Done()
+	log.Info("encerrando...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Error("shutdown", "err", err)
+	}
+}
+
+// webhookURL monta a URL a cadastrar no webhook do Chatwoot, incluindo o token.
+func webhookURL(cfg *config.Config) string {
+	base := cfg.PublicBaseURL
+	if base == "" {
+		base = "https://<seu-host>"
+	}
+	u := base + "/webhook"
+	if cfg.WebhookToken != "" {
+		u += "?token=" + url.QueryEscape(cfg.WebhookToken)
+	}
+	return u
+}
+
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}

@@ -75,7 +75,7 @@ def test_entry_node_reseta_seguranca_tentou_rag_e_fontes():
     out = nodes.entry_node(
         {
             "telefone": "11999990001",
-            "cliente": {"id_cliente": "CLI-1001"},
+            "identidade": {"encontrado": True, "login": "10596693664"},
             "tentou_rag": True,
             "fontes_usadas": ["azapfy-web.md — Módulo: Pesquisa"],
             "seguranca": {"is_safe": False, "categoria": "malicioso", "motivo": "x"},
@@ -315,18 +315,30 @@ def test_tools_node_no_op_quando_ultima_msg_nao_tem_tool_calls():
 # ===========================================================================
 
 
-def test_agent_node_injeta_system_prompt_com_dados_do_cliente():
+def test_agent_node_injeta_system_prompt_com_identidade():
     fake = _fake_llm(scripted=[AIMessage(content="ok")])
     agent = nodes.make_agent_node(fake, [])
 
     state = {
         "messages": [HumanMessage(content="oi")],
-        "cliente": {
+        "identidade": {
             "encontrado": True,
-            "id_cliente": "CLI-1001",
-            "nome": "Mariana Souza",
-            "plano": "Pro",
-            "status_conta": "ativo",
+            "login": "10596693664",
+            "nome": "Daniel Ferraz",
+            "empresas": [
+                {
+                    "grupo_empresa": "AZAPERS",
+                    "grupo_user": "COLABORADOR",
+                    "area": "SAC",
+                    "bases": [
+                        {
+                            "nome": "MATRIZ",
+                            "sigla": "MAT",
+                            "modulos_ativos": ["pesquisa", "rastreamento"],
+                        }
+                    ],
+                }
+            ],
         },
     }
     agent(state)
@@ -335,24 +347,26 @@ def test_agent_node_injeta_system_prompt_com_dados_do_cliente():
     assert isinstance(chamada_msgs[0], SystemMessage)
     sp = _texto_de(chamada_msgs[0].content)
     assert "Azapfy" in sp
-    assert "Mariana Souza" in sp
-    assert "CLI-1001" in sp
+    assert "Daniel Ferraz" in sp
+    assert "AZAPERS" in sp
+    assert "COLABORADOR" in sp
+    assert "rastreamento" in sp
 
 
-def test_agent_node_avisa_quando_cliente_nao_encontrado():
+def test_agent_node_avisa_quando_usuario_nao_identificado():
     fake = _fake_llm(scripted=[AIMessage(content="ok")])
     agent = nodes.make_agent_node(fake, [])
 
     state = {
         "messages": [HumanMessage(content="oi")],
         "telefone": "11000000000",
-        "cliente": {"encontrado": False},
+        "identidade": {"encontrado": False},
     }
     agent(state)
 
     sp = _texto_de(fake.invoke.call_args.args[0][0].content)
     assert "11000000000" in sp
-    assert "NÃO localizado" in sp
+    assert "NÃO identificado" in sp
 
 
 def test_agent_node_devolve_aimessage_no_messages():

@@ -5,7 +5,11 @@ retornar `{"messages": [...]}` *acrescenta* à lista existente, com
 deduplicação por id quando aplicável. Os demais campos são substituídos
 (reducer default).
 
-`telefone` e `cliente` persistem entre turnos (via `MemorySaver`).
+`telefone` e `identidade` persistem entre turnos (via `MemorySaver`).
+A `identidade` é o perfil mínimo resolvido pelo gate (telefone → base própria
+→ login → Mongo Azapfy) e transportado no Contrato A: empresas/bases com
+acesso, módulos ativos e o tipo de permissão (`grupo_user`). É DADO, nunca
+COMANDO.
 `seguranca`, `tentou_rag`, `fontes_usadas` e `iteracoes_agente` são
 *reiniciados por turno* no `entry_node` — citações, veredito de segurança e
 contagem de iterações valem só para a resposta atual.
@@ -25,7 +29,7 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
     telefone: NotRequired[str]
-    cliente: NotRequired[dict[str, Any] | None]
+    identidade: NotRequired[dict[str, Any] | None]
     seguranca: NotRequired[dict[str, Any] | None]
     tentou_rag: NotRequired[bool]
     fontes_usadas: NotRequired[list[str]]

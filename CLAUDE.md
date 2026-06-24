@@ -13,29 +13,58 @@ externa; quando ela não cobre o assunto, o agente oferece abrir um chamado.
 
 Stack: **LangGraph + LangChain** (orquestração), **OpenRouter** (gateway de
 LLM), **ChromaDB** + embeddings locais (RAG), **Chainlit** (UI). Roadmap
-detalhado em `plano_de_execucao.md`.
+detalhado em `agente-ia/plano_de_execucao.md`.
+
+## Estrutura do monorepo
+
+Este repositório reúne **dois projetos** que se integram pelo **Contrato A**
+(`POST /chat`):
+
+```
+ia-atendimento-suporte-azapfy/
+├── agente-ia/   # cérebro Python (este doc descreve majoritariamente ele)
+│   ├── app.py            # UI Chainlit (harness de dev)
+│   ├── server.py         # API FastAPI do Contrato A (POST /chat, /health)
+│   ├── src/ tests/ docs/ chroma_db/ venv/ requirements.txt
+│   └── plano_de_execucao.md
+└── backend/     # gateway Go (transporte Chatwoot + gate de identidade)
+    ├── cmd/bot/ internal/ go.mod
+    └── README.md
+```
+
+Os caminhos citados na seção de arquitetura abaixo (`src/agent/…`, `tests/…`)
+são **relativos a `agente-ia/`**. O fluxo de produção é: WhatsApp → Chatwoot →
+`backend/` (Go: webhook + gate de identidade) → `agente-ia/server.py` (Contrato
+A) → grafo → resposta. O `backend/` é self-contained (módulo Go `bot-azapfy`).
 
 ## Comandos
 
 ```bash
-# Setup (uma vez)
+# --- Agente Python (rodar de dentro de agente-ia/) ---
+cd agente-ia
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # preencher OPENROUTER_API_KEY
 
-# Ingerir o PDF no ChromaDB (obrigatório antes de rodar a app)
+# Ingerir as docs no ChromaDB (obrigatório antes de rodar a app)
 python -m src.rag.ingest      # opcional: --docs-dir docs --persist-dir ./chroma_db
 
-# Rodar a UI (http://localhost:8000)
-chainlit run app.py -w
+chainlit run app.py -w        # UI dev (http://localhost:8000)
+uvicorn server:app --port 8001  # API do Contrato A (consumida pelo backend Go)
 
-# Testes
 pytest tests/ -v
 pytest tests/test_graph.py::test_grafo_e2e_loop_agent_tools_agent -v   # um teste só
+
+# --- Backend Go (rodar de dentro de backend/) ---
+cd backend
+go build ./... && go vet ./... && go test ./...
+go run ./cmd/bot               # gateway Chatwoot (precisa de .env + Mongo + cérebro no ar)
 ```
 
-A maioria dos testes mocka o LLM (sem rede). Os poucos testes de integração
-são pulados via `@pytest.mark.skipif` quando não há chave real no `.env`.
+A maioria dos testes Python mocka o LLM (sem rede). Os poucos testes de
+integração são pulados via `@pytest.mark.skipif` quando não há chave real no
+`.env`. Os testes Go (`internal/identity`, `internal/mongo`) usam fakes — sem
+rede/Mongo.
 
 ## Arquitetura (visão geral)
 

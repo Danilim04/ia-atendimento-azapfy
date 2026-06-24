@@ -12,46 +12,44 @@ from app import (
     COMANDO_TROCAR_TELEFONE,
     extrair_texto_resposta_ask,
     formatar_fontes,
-    saudacao_para_cliente,
+    saudacao_para_identidade,
 )
 
 
 # ---------------------------------------------------------------------------
-# saudacao_para_cliente
+# saudacao_para_identidade
 # ---------------------------------------------------------------------------
 
 
-def test_saudacao_cliente_encontrado_traz_nome_plano_status():
-    out = saudacao_para_cliente(
+def test_saudacao_identidade_encontrada_traz_nome_e_empresa():
+    out = saudacao_para_identidade(
         {
             "encontrado": True,
-            "nome": "Mariana Souza",
-            "plano": "Pro",
-            "status_conta": "ativo",
+            "nome": "Daniel Ferraz",
+            "empresas": [{"grupo_empresa": "AZAPERS"}],
         }
     )
-    assert "Mariana Souza" in out
-    assert "Pro" in out
-    assert "ativo" in out
+    assert "Daniel Ferraz" in out
+    assert "AZAPERS" in out
     # Negrito no nome
-    assert "**Mariana Souza**" in out
+    assert "**Daniel Ferraz**" in out
 
 
-def test_saudacao_cliente_nao_encontrado_oferece_trocar_telefone():
-    out = saudacao_para_cliente({"encontrado": False})
+def test_saudacao_identidade_nao_encontrada_oferece_trocar_telefone():
+    out = saudacao_para_identidade({"encontrado": False})
     assert COMANDO_TROCAR_TELEFONE in out
-    assert "Não encontrei" in out
+    assert "Não consegui" in out
 
 
 def test_saudacao_aceita_input_invalido_sem_quebrar():
-    assert "Azapfy" in saudacao_para_cliente(None)
-    assert "Azapfy" in saudacao_para_cliente("string solta")
+    assert "Azapfy" in saudacao_para_identidade(None)
+    assert "Azapfy" in saudacao_para_identidade("string solta")
 
 
-def test_saudacao_cliente_encontrado_com_campos_faltando_nao_quebra():
-    out = saudacao_para_cliente({"encontrado": True})
+def test_saudacao_identidade_encontrada_com_campos_faltando_nao_quebra():
+    out = saudacao_para_identidade({"encontrado": True})
     # Não explode, e mantém placeholder previsível
-    assert "cliente" in out.lower() or "Olá" in out
+    assert "usuário" in out.lower() or "Olá" in out
 
 
 # ---------------------------------------------------------------------------
