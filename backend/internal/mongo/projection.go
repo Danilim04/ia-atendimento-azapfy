@@ -7,10 +7,11 @@ import "sort"
 //   - só módulos com ativo==true entram em modulos_ativos.
 //
 // A saída é determinística (ordenada por grupo, base e módulo) para facilitar
-// testes e cache. Descarta tudo o mais do documento (cpf, senha, email,
-// jornada, app...) — data minimization é também um controle de segurança.
+// testes e cache. Descarta tudo o mais do documento (cpf, senha, jornada,
+// app...) — data minimization é também um controle de segurança. O email é
+// mantido por ser o `cod_relator` exigido pelo SAC (abrir/listar chamados).
 func Projetar(doc UsuarioDoc) Perfil {
-	p := Perfil{Encontrado: true, Login: doc.Login, Nome: doc.Nome}
+	p := Perfil{Encontrado: true, Login: doc.Login, Nome: doc.Nome, Email: doc.Email}
 
 	for grupoNome, grupo := range doc.Grupos {
 		if !grupo.Ativo {

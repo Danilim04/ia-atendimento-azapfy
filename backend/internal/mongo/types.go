@@ -9,6 +9,7 @@ type Perfil struct {
 	Encontrado bool      `json:"encontrado"`
 	Login      string    `json:"login,omitempty"`
 	Nome       string    `json:"nome,omitempty"`
+	Email      string    `json:"email,omitempty"` // = cod_relator no SAC (abertura/listagem de chamados)
 	Empresas   []Empresa `json:"empresas,omitempty"`
 }
 

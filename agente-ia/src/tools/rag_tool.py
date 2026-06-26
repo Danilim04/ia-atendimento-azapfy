@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from langchain_core.tools import tool
 
 from src.config import get_settings
 from src.rag.retriever import get_retriever
+
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -37,10 +41,12 @@ def consultar_base_conhecimento(pergunta: str) -> dict[str, Any]:
         }
 
     settings = get_settings()
+    logger.info("rag_query top_k=%s pergunta=%r", settings.rag_top_k, pergunta)
     try:
         retriever = get_retriever(k=settings.rag_top_k)
         docs = retriever.invoke(pergunta)
     except Exception as exc:  # noqa: BLE001 — devolvemos a falha pro agente decidir
+        logger.warning("rag_falhou pergunta=%r erro=%s", pergunta, exc)
         return {
             "encontrado": False,
             "total": 0,
@@ -58,6 +64,11 @@ def consultar_base_conhecimento(pergunta: str) -> dict[str, Any]:
             }
         )
 
+    logger.info(
+        "rag_resultado total=%d fontes=%s",
+        len(chunks),
+        [c["source"] for c in chunks],
+    )
     return {
         "encontrado": len(chunks) > 0,
         "total": len(chunks),

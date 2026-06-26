@@ -44,6 +44,18 @@ type Config struct {
 	ConfirmField  string        // dado pedido na confirmação: "email" (default) | "nome"
 	MaxTentativas int           // tentativas de login/confirmação antes de rotear p/ humano
 	IdentityTTL   time.Duration // validade do cache telefone→perfil (base própria)
+
+	// SAC (atendimento/chamados): tools de dados que o cérebro chama via toolsapi.
+	// Tudo opcional — sem SAC_BASE_URL a API de tools não é exposta.
+	SACBaseURL    string        // raiz do backend SAC (PHP)
+	SACPortalURL  string        // raiz do portal p/ montar o link do chamado
+	SACServiceCod string        // login privilegiado p/ definir prioridade (editar)
+	SACGrupoEmp   string        // desk onde os chamados são abertos (ex.: AZAPERS)
+	SACEmpresa    string        // incidente.empresa (ex.: AZAPFY)
+	SACTimezone   string        // ex.: America/Sao_Paulo
+	SACAPIToken   string        // bearer opcional do backend SAC
+	SACConfigTTL  time.Duration // validade do cache de configuração (categorias/ocorrências)
+	ToolsAPIToken string        // segredo compartilhado cérebro↔gateway (X-Tools-Token)
 }
 
 // Load lê o .env (se existir) e em seguida o ambiente, validando os obrigatórios.
@@ -68,6 +80,14 @@ func Load() (*Config, error) {
 		BrainBaseURL:      strings.TrimRight(getenv("BRAIN_BASE_URL", "http://localhost:8001"), "/"),
 		ConfirmField:      strings.ToLower(getenv("CONFIRM_FIELD", "email")),
 		MaxTentativas:     getenvInt("MAX_TENTATIVAS", 3),
+		SACBaseURL:        strings.TrimRight(getenv("SAC_BASE_URL", ""), "/"),
+		SACPortalURL:      strings.TrimRight(getenv("SAC_PORTAL_URL", "https://atendimento.azapfy.com.br"), "/"),
+		SACServiceCod:     getenv("SAC_SERVICE_COD", ""),
+		SACGrupoEmp:       getenv("SAC_GRUPO_EMP", "AZAPERS"),
+		SACEmpresa:        getenv("SAC_EMPRESA", "AZAPFY"),
+		SACTimezone:       getenv("SAC_TIMEZONE", "America/Sao_Paulo"),
+		SACAPIToken:       getenv("SAC_API_TOKEN", ""),
+		ToolsAPIToken:     getenv("TOOLS_API_TOKEN", ""),
 	}
 
 	var err error
@@ -79,6 +99,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.IdentityTTL, err = parseDuration(getenv("IDENTITY_TTL", "24h")); err != nil {
 		return nil, fmt.Errorf("IDENTITY_TTL inválido: %w", err)
+	}
+	if cfg.SACConfigTTL, err = parseDuration(getenv("SAC_CONFIG_TTL", "10m")); err != nil {
+		return nil, fmt.Errorf("SAC_CONFIG_TTL inválido: %w", err)
 	}
 
 	var missing []string

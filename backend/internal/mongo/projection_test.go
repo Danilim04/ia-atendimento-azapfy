@@ -52,6 +52,9 @@ func TestProjetarFiltraGrupoInativoEModulosInativos(t *testing.T) {
 	if !p.Encontrado || p.Login != "10596693664" || p.Nome != "Daniel Ferraz" {
 		t.Fatalf("cabeçalho do perfil inesperado: %+v", p)
 	}
+	if p.Email != "daniel.ferraz@azapfy.com.br" {
+		t.Fatalf("email (cod_relator do SAC) não projetado: %q", p.Email)
+	}
 	if len(p.Empresas) != 1 {
 		t.Fatalf("esperava 1 empresa ativa (AZAPERS), veio %d: %+v", len(p.Empresas), p.Empresas)
 	}

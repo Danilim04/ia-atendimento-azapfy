@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -17,6 +18,25 @@ type fakeRepo struct {
 func (f fakeRepo) BuscarPorLogin(_ context.Context, login string) (mongo.UsuarioDoc, bool, error) {
 	d, ok := f.docs[login]
 	return d, ok, nil
+}
+
+// fakeExtractor simula o cérebro: devolve, para uma mensagem, o login que ele
+// "extraiu". `chamado` registra se foi acionado (p/ checar que o determinístico
+// não cai no fallback à toa). `err` força o caminho de indisponibilidade.
+type fakeExtractor struct {
+	respostas map[string]string
+	err       error
+	chamado   *bool
+}
+
+func (f fakeExtractor) ExtrairLogin(_ context.Context, mensagem string) (string, error) {
+	if f.chamado != nil {
+		*f.chamado = true
+	}
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.respostas[mensagem], nil
 }
 
 func docDaniel() mongo.UsuarioDoc {
@@ -41,12 +61,17 @@ func docDaniel() mongo.UsuarioDoc {
 
 func newGate(t *testing.T, repo UserRepo) (*Gate, store.Store) {
 	t.Helper()
+	return newGateComExtractor(t, repo, nil)
+}
+
+func newGateComExtractor(t *testing.T, repo UserRepo, extractor LoginExtractor) (*Gate, store.Store) {
+	t.Helper()
 	st, err := store.NewSQLite(filepath.Join(t.TempDir(), "gate.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return New(st, repo, "email", 3, time.Hour, nil), st
+	return New(st, repo, "email", 3, time.Hour, extractor, nil), st
 }
 
 func TestGateFluxoFeliz(t *testing.T) {
@@ -115,6 +140,57 @@ func TestGateLoginNaoEncontradoRoteiaHumano(t *testing.T) {
 	// Depois de falhar, novas mensagens são ignoradas (já roteado).
 	if r := g.Process(ctx, conv, phone, "oi de novo"); r.Acao != AcaoIgnorar {
 		t.Fatalf("pós-falha: esperava ignorar, veio %q", r.Acao)
+	}
+}
+
+func TestGateLoginCpfFormatadoNormaliza(t *testing.T) {
+	// Banco guarda só dígitos ("10596693664"); cliente manda CPF pontuado.
+	// Deve resolver SEM acionar a IA (normalização determinística de CPF/CNPJ).
+	chamado := false
+	repo := fakeRepo{docs: map[string]mongo.UsuarioDoc{"10596693664": docDaniel()}}
+	g, _ := newGateComExtractor(t, repo, fakeExtractor{chamado: &chamado})
+	ctx := context.Background()
+	const conv = int64(11)
+	const phone = "5511999990002"
+
+	g.Process(ctx, conv, phone, "oi") // pede login
+	if r := g.Process(ctx, conv, phone, "105.966.936-64"); r.Acao != AcaoPerguntar {
+		t.Fatalf("CPF formatado: esperava perguntar (confirmação), veio %q", r.Acao)
+	}
+	if chamado {
+		t.Fatal("não deveria chamar a IA quando o CPF formatado já normaliza")
+	}
+}
+
+func TestGateLoginViaIAFallback(t *testing.T) {
+	// Login não-numérico embutido em frase: determinístico falha, IA extrai.
+	doc := docDaniel()
+	doc.Login = "joao"
+	repo := fakeRepo{docs: map[string]mongo.UsuarioDoc{"joao": doc}}
+	extractor := fakeExtractor{respostas: map[string]string{"meu login é joao": "joao"}}
+	g, _ := newGateComExtractor(t, repo, extractor)
+	ctx := context.Background()
+	const conv = int64(12)
+	const phone = "5511999990003"
+
+	g.Process(ctx, conv, phone, "oi") // pede login
+	if r := g.Process(ctx, conv, phone, "meu login é joao"); r.Acao != AcaoPerguntar {
+		t.Fatalf("login via IA: esperava perguntar (confirmação), veio %q", r.Acao)
+	}
+}
+
+func TestGateExtractorIndisponivelNaoQuebra(t *testing.T) {
+	// IA fora do ar + login não resolvível deterministicamente → trata como
+	// não encontrado (pede de novo), sem erro fatal.
+	repo := fakeRepo{docs: map[string]mongo.UsuarioDoc{"joao": docDaniel()}}
+	extractor := fakeExtractor{err: errors.New("brain offline")}
+	g, _ := newGateComExtractor(t, repo, extractor)
+	ctx := context.Background()
+	const conv = int64(13)
+
+	g.Process(ctx, conv, "5511999990004", "oi")
+	if r := g.Process(ctx, conv, "5511999990004", "meu login é joao"); r.Acao != AcaoPerguntar {
+		t.Fatalf("IA indisponível: esperava perguntar de novo, veio %q", r.Acao)
 	}
 }
 

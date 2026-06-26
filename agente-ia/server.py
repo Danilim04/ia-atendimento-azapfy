@@ -23,6 +23,7 @@ consultas de dados ao usuário autorizado.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional
 
 from fastapi import FastAPI
@@ -30,7 +31,29 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from src.agent.graph import build_graph
+from src.identity.login_extractor import extrair_login
 
+
+def _setup_logging() -> None:
+    """Configura o logging-raiz para o cérebro.
+
+    Sob uvicorn, sem isto os loggers de `src.*` (guardrails, tools, nós) ficam
+    em WARNING e seus `logger.info(...)` somem. Nível controlado por `LOG_LEVEL`
+    (DEBUG/INFO/WARNING/ERROR; default INFO). Use `LOG_LEVEL=DEBUG` para ver a
+    query do RAG, os tool_calls do agente e o uso de tokens.
+    """
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
+    )
+    # Garante o nível mesmo que uvicorn reconfigure só os loggers dele.
+    logging.getLogger("src").setLevel(level)
+
+
+_setup_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +71,14 @@ class ChatResponse(BaseModel):
     reply: str
     acoes: list[dict[str, Any]] = Field(default_factory=list)
     fontes: list[str] = Field(default_factory=list)
+
+
+class ExtractLoginRequest(BaseModel):
+    mensagem: str
+
+
+class ExtractLoginResponse(BaseModel):
+    login: Optional[str] = None
 
 
 def _extrair_reply(valores: dict) -> str:
@@ -71,6 +102,17 @@ async def processar_chat(graph: Any, req: ChatRequest) -> ChatResponse:
     A `identidade` entra no estado e é injetada no system prompt como DADO
     (ver `nodes._build_system_message`).
     """
+    login = (req.identidade or {}).get("login") if req.identidade else None
+    logger.info(
+        "chat_request conversation_id=%s canal=%s telefone=%s login=%s identificado=%s mensagem=%r",
+        req.conversation_id,
+        req.canal,
+        req.telefone,
+        login,
+        bool(req.identidade and req.identidade.get("encontrado")),
+        req.mensagem,
+    )
+
     config = {"configurable": {"thread_id": req.conversation_id}}
     inputs: dict[str, Any] = {
         "identidade": req.identidade,
@@ -80,10 +122,22 @@ async def processar_chat(graph: Any, req: ChatRequest) -> ChatResponse:
         inputs["telefone"] = req.telefone
 
     valores = await graph.ainvoke(inputs, config=config)
-    return ChatResponse(
+    resposta = ChatResponse(
         reply=_extrair_reply(valores),
         fontes=list(valores.get("fontes_usadas") or []),
     )
+    logger.info(
+        "chat_response conversation_id=%s len_reply=%d fontes=%s",
+        req.conversation_id,
+        len(resposta.reply),
+        resposta.fontes,
+    )
+    logger.debug(
+        "chat_response_full conversation_id=%s reply=%r",
+        req.conversation_id,
+        resposta.reply,
+    )
+    return resposta
 
 
 # ---------------------------------------------------------------------------
@@ -111,3 +165,15 @@ async def health() -> dict[str, str]:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
     return await processar_chat(_get_graph(), req)
+
+
+@app.post("/extract-login", response_model=ExtractLoginResponse)
+async def extract_login(req: ExtractLoginRequest) -> ExtractLoginResponse:
+    """Extrai o login embutido numa frase (fallback do gate Go).
+
+    O valor é só um candidato — quem autoriza é o gate (Mongo + confirmação).
+    """
+    logger.info("extract_login_request mensagem=%r", req.mensagem)
+    resultado = extrair_login(req.mensagem)
+    logger.info("extract_login_response login=%r", resultado.get("login"))
+    return ExtractLoginResponse(login=resultado.get("login"))

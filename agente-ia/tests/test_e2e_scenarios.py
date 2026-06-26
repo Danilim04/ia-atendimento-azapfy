@@ -382,7 +382,7 @@ def test_cenario_7_system_prompt_exige_confirmacao_antes_de_abrir_chamado():
     O fluxo runtime real é exercitado pelo cenário E2E manual via Chainlit.
     """
     sp = prompts.SYSTEM_PROMPT_AGENTE
-    assert "abrir_novo_chamado" in sp
+    assert "abrir_chamado_suporte" in sp
     assert "CONFIRME" in sp or "confirme" in sp.lower()
     assert "irreversível" in sp.lower() or "LLM08" in sp
 

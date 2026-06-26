@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"bot-azapfy/internal/mongo"
@@ -70,4 +71,45 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		return nil, fmt.Errorf("brain decode: %w", err)
 	}
 	return &out, nil
+}
+
+// ExtractLoginRequest é o corpo de POST /extract-login.
+type ExtractLoginRequest struct {
+	Mensagem string `json:"mensagem"`
+}
+
+// ExtractLoginResponse é a resposta de POST /extract-login. Login vazio/null =
+// a IA não achou um identificador na frase.
+type ExtractLoginResponse struct {
+	Login string `json:"login"`
+}
+
+// ExtrairLogin pede ao cérebro o identificador (login) embutido na mensagem.
+// Fallback do gate quando a normalização determinística não resolve. Satisfaz
+// identity.LoginExtractor. O valor é só um candidato a validar no Mongo.
+func (c *Client) ExtrairLogin(ctx context.Context, mensagem string) (string, error) {
+	payload, err := json.Marshal(ExtractLoginRequest{Mensagem: mensagem})
+	if err != nil {
+		return "", err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/extract-login", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("brain /extract-login: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("brain /extract-login: status %d", resp.StatusCode)
+	}
+	var out ExtractLoginResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("brain decode: %w", err)
+	}
+	return strings.TrimSpace(out.Login), nil
 }

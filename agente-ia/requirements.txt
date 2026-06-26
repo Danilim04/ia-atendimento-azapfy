@@ -18,6 +18,8 @@ chainlit>=1.3.0,<3.0.0
 # --- API (Contrato A: Go transporte → cérebro Python) ---
 fastapi>=0.115.0,<1.0.0
 uvicorn>=0.30.0,<1.0.0
+# Cliente HTTP das tools de chamado (cérebro → gateway Go /tools/sac/*)
+httpx>=0.27.0,<1.0.0
 
 # --- Config / Validation ---
 pydantic>=2.9.0,<3.0.0

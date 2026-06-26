@@ -75,6 +75,13 @@ func (e *Engine) HandleConversationUpdated(ctx context.Context, ev *chatwoot.Con
 }
 
 func (e *Engine) encaminhar(ctx context.Context, conv *chatwoot.Conversation, phone, content string, res identity.Resultado) {
+	var login string
+	if res.Perfil != nil {
+		login = res.Perfil.Login
+	}
+	e.log.Debug("encaminhando ao cérebro",
+		"conversation_id", conv.ID, "telefone", phone, "login", login, "mensagem", content)
+
 	resp, err := e.brain.Chat(ctx, brain.ChatRequest{
 		ConversationID: strconv.FormatInt(conv.ID, 10),
 		Canal:          "whatsapp",
@@ -91,6 +98,8 @@ func (e *Engine) encaminhar(ctx context.Context, conv *chatwoot.Conversation, ph
 	if reply == "" {
 		reply = "Desculpe, não consegui formular uma resposta agora. Pode reformular?"
 	}
+	e.log.Debug("resposta do cérebro",
+		"conversation_id", conv.ID, "fontes", resp.Fontes, "reply", reply)
 	e.send(ctx, conv.ID, reply)
 }
 

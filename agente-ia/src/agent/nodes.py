@@ -31,6 +31,7 @@ from src.agent.state import AgentState
 from src.config import get_settings
 from src.security.input_guardrails import avaliar_entrada
 from src.security.output_guardrails import envolver_chunks_rag
+from src.tools.sac_tools import TOOLS_COM_CONTEXTO_SESSAO
 
 
 logger = logging.getLogger(__name__)
@@ -298,6 +299,14 @@ def make_agent_node(llm: Any, tools: list[BaseTool]) -> Callable[[AgentState], d
             mensagens = _aplicar_cache_control(mensagens)
         resposta = bound.invoke(mensagens)
         _log_uso(resposta)
+        tool_calls = list(getattr(resposta, "tool_calls", None) or [])
+        if tool_calls:
+            logger.info(
+                "agent_tool_calls %s",
+                [{"nome": tc.get("name"), "args": tc.get("args")} for tc in tool_calls],
+            )
+        else:
+            logger.info("agent_resposta_textual len=%d", len(str(resposta.content or "")))
         iteracoes = int(state.get("iteracoes_agente") or 0) + 1
         return {"messages": [resposta], "iteracoes_agente": iteracoes}
 
@@ -355,8 +364,14 @@ def make_tools_node(tools: list[BaseTool]) -> Callable[[AgentState], dict]:
                 )
                 continue
 
+            logger.info("tool_exec nome=%s args=%s", nome, tc.get("args") or {})
+            args = dict(tc.get("args") or {})
+            # Tools de dados do SAC recebem o `telefone` do ESTADO (identidade do
+            # gate), não do LLM — o relator nunca é escolhido pelo modelo.
+            if nome in TOOLS_COM_CONTEXTO_SESSAO:
+                args["telefone"] = state.get("telefone") or ""
             try:
-                resultado = tool.invoke(tc.get("args") or {})
+                resultado = tool.invoke(args)
             except Exception as exc:  # noqa: BLE001 — devolvemos a falha pro agente decidir
                 logger.warning("tool_falhou nome=%s erro=%s", nome, exc)
                 resultado = {"erro": f"falha ao executar {nome}: {exc}"}

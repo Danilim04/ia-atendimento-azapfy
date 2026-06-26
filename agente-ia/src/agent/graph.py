@@ -33,13 +33,20 @@ from src.agent.nodes import (
     safe_response_node,
 )
 from src.agent.state import AgentState
-from src.tools.crm_mocks import CRM_TOOLS
+from src.tools.crm_mocks import rastrear_nota_fiscal
 from src.tools.rag_tool import consultar_base_conhecimento
+from src.tools.sac_tools import SAC_TOOLS
 
 
 def get_default_tools() -> list[BaseTool]:
-    """Tools canônicas: CRM (4) + RAG (1). O agente não acessa a internet."""
-    return [*CRM_TOOLS, consultar_base_conhecimento]
+    """Tools canônicas: RAG + rastreio de NF (mock) + chamados reais (SAC via Go).
+
+    O agente não acessa a internet. A identidade do relator (nome/e-mail/grupo)
+    vem do gate via Contrato A, então não há `buscar_cliente_por_telefone` aqui;
+    abrir/listar chamados são as tools reais do SAC (`SAC_TOOLS`). O rastreio de
+    NF segue mockado (fase seguinte).
+    """
+    return [consultar_base_conhecimento, rastrear_nota_fiscal, *SAC_TOOLS]
 
 
 def build_graph(

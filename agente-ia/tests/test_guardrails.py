@@ -354,7 +354,7 @@ def test_system_prompt_agente_contem_regras_chave():
     assert "buscar_na_web_azapfy" not in sp
     assert "internet" in sp.lower()
     # Confirmação humana antes de abrir chamado (LLM08)
-    assert "abrir_novo_chamado" in sp
+    assert "abrir_chamado_suporte" in sp
     # Resposta padrão off-topic embutida
     assert RESPOSTA_OFF_TOPIC in sp
 

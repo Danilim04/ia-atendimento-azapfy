@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # vem da política de tools no system prompt; este é só o limite de guarda.
     agent_max_iteracoes: int = Field(5, alias="AGENT_MAX_ITERACOES")
 
+    # Tools de dados do SAC (abrir/listar chamados) ficam no gateway Go; o agente
+    # as chama via HTTP. `sac_tools_token` casa com TOOLS_API_TOKEN do Go.
+    sac_tools_base_url: str = Field("http://localhost:8080", alias="SAC_TOOLS_BASE_URL")
+    sac_tools_token: str = Field("", alias="SAC_TOOLS_TOKEN")
+    sac_tools_timeout: float = Field(30.0, alias="SAC_TOOLS_TIMEOUT")
+
 
 @lru_cache
 def get_settings() -> Settings:

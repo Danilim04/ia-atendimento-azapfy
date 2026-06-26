@@ -22,7 +22,9 @@ import (
 	"bot-azapfy/internal/engine"
 	"bot-azapfy/internal/identity"
 	"bot-azapfy/internal/mongo"
+	"bot-azapfy/internal/sac"
 	"bot-azapfy/internal/store"
+	"bot-azapfy/internal/toolsapi"
 	"bot-azapfy/internal/webhook"
 )
 
@@ -62,7 +64,8 @@ func main() {
 
 	cw := chatwoot.NewClient(cfg.ChatwootBaseURL, cfg.ChatwootAccountID, cfg.ChatwootAPIToken)
 	brainClient := brain.NewClient(cfg.BrainBaseURL, cfg.BrainTimeout)
-	gate := identity.New(st, repo, cfg.ConfirmField, cfg.MaxTentativas, cfg.IdentityTTL, log)
+	// brainClient também extrai o login de frases livres (fallback do gate).
+	gate := identity.New(st, repo, cfg.ConfirmField, cfg.MaxTentativas, cfg.IdentityTTL, brainClient, log)
 	eng := engine.New(cfg, cw, gate, brainClient, log)
 
 	if cfg.WebhookSecret == "" && cfg.WebhookToken == "" {
@@ -78,6 +81,24 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// API interna de tools de dados (abrir/listar chamados no SAC) que o cérebro
+	// Python chama durante o loop do agente. Opcional: só sobe com SAC_BASE_URL +
+	// TOOLS_API_TOKEN. O relator vem da identidade do gate, nunca do LLM.
+	if cfg.SACBaseURL != "" {
+		sacClient := sac.New(sac.Options{
+			BaseURL: cfg.SACBaseURL, PortalURL: cfg.SACPortalURL, ServiceCod: cfg.SACServiceCod,
+			GrupoEmp: cfg.SACGrupoEmp, Empresa: cfg.SACEmpresa, Timezone: cfg.SACTimezone,
+			APIToken: cfg.SACAPIToken, ConfigTTL: cfg.SACConfigTTL,
+		})
+		if cfg.ToolsAPIToken == "" {
+			log.Warn("SAC configurado, mas TOOLS_API_TOKEN vazio: API de tools NÃO exposta")
+		} else {
+			toolsapi.New(st, sacClient, cfg.ToolsAPIToken, log).Register(mux)
+			log.Info("API de tools SAC habilitada", "grupo_emp", cfg.SACGrupoEmp,
+				"conta_servico_prioridade", sacClient.TemContaServico())
+		}
+	}
 
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,
