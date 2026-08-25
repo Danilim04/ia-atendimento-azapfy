@@ -1,0 +1,61 @@
+# ==============================================================================
+# Stack do bot (base) — cérebro Python (Contrato A) + gateway Go (Chatwoot).
+#
+# Dev local:   docker compose up --build   (portas em localhost, build local)
+# Produção:    COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml no .env
+#              (imagens pinadas por tag, sem build, rede do Chatwoot — ver
+#              docker-compose.prod.yml e deploy/deploy-remote.sh)
+#
+# O .env único na raiz alimenta os DOIS serviços (ver .env.example). O que é
+# "fiação" entre containers (URLs internas, paths) mora AQUI em environment:
+# — vence o .env e não depende de ninguém preencher certo.
+# ==============================================================================
+name: azapfy-bot
+
+services:
+  brain:
+    image: ${IMAGE_REPO:-azapfy-bot}:brain-${IMAGE_TAG:-dev}
+    build: ./agente-ia
+    env_file:
+      # required:false só para `compose config`/build funcionarem sem .env;
+      # para SUBIR a stack o .env é indispensável (cp .env.example .env).
+      - path: .env
+        required: false
+    environment:
+      CHROMA_PERSIST_DIR: /app/chroma_db
+      DOCS_DIR: /app/docs
+      # Tools de chamado (SAC) que o cérebro chama no gateway.
+      SAC_TOOLS_BASE_URL: http://gateway:8080
+    ports:
+      - '127.0.0.1:8001:8001'
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # o import da app compila o grafo e abre o Chroma — dá um fôlego
+      start_period: 40s
+
+  gateway:
+    image: ${IMAGE_REPO:-azapfy-bot}:gateway-${IMAGE_TAG:-dev}
+    build: ./backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: '8080'
+      BRAIN_BASE_URL: http://brain:8001
+      DB_PATH: /data/gateway.db
+    volumes:
+      - gateway-data:/data
+    ports:
+      - '127.0.0.1:8080:8080'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  gateway-data:

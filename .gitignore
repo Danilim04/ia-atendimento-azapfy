@@ -41,3 +41,11 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Terraform (state local, providers baixados, plans)
+infra/terraform/.terraform/
+infra/terraform/terraform.tfstate*
+infra/terraform/*.tfplan
+
+# Estado local do gateway (sqlite)
+*.db
