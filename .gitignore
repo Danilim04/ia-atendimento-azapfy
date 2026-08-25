@@ -16,6 +16,8 @@ venv/
 .venv/
 env/
 ENV/
+# deploy/env/ são templates de deploy, não um virtualenv
+!deploy/env/
 
 # Secrets
 .env
