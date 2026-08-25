@@ -68,6 +68,14 @@ func (s *Server) process(parent context.Context, j job) {
 		}
 		s.engine.HandleConversationUpdated(ctx, &ev)
 
+	case "conversation_created":
+		var ev chatwoot.ConversationCreated
+		if err := json.Unmarshal(j.body, &ev); err != nil {
+			s.log.Error("unmarshal conversation_created", "err", err)
+			return
+		}
+		s.engine.HandleConversationCreated(ctx, &ev)
+
 	default:
 		s.log.Debug("evento sem handler, ignorado", "event", j.event)
 	}

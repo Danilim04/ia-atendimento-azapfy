@@ -91,6 +91,13 @@ type ConversationUpdated struct {
 	Conversation
 }
 
+// ConversationCreated representa o evento conversation_created — o payload é a
+// própria conversa serializada (mesma forma do conversation_updated).
+type ConversationCreated struct {
+	Event string `json:"event"`
+	Conversation
+}
+
 // ChangeValue é o par current/previous de cada atributo alterado.
 type ChangeValue struct {
 	CurrentValue  json.RawMessage `json:"current_value"`

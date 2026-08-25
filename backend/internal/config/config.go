@@ -29,6 +29,10 @@ type Config struct {
 	// conversa é roteada quando a identificação falha.
 	LabelBot    string
 	LabelHumano string
+	// InboxID: caixa de entrada cujas conversas NOVAS ganham a LabelBot no
+	// conversation_created (o bot mesmo etiqueta — sem automation rule no
+	// Chatwoot, que o omni-route não gerencia). 0 = todas as caixas.
+	InboxID int64
 
 	// Mongo da Azapfy (lookup de usuário por login — a 1ª "tool").
 	MongoURI        string
@@ -79,6 +83,7 @@ func Load() (*Config, error) {
 		MongoCollection:   getenv("MONGO_COLLECTION", "users"),
 		BrainBaseURL:      strings.TrimRight(getenv("BRAIN_BASE_URL", "http://localhost:8001"), "/"),
 		ConfirmField:      strings.ToLower(getenv("CONFIRM_FIELD", "email")),
+		InboxID:           int64(getenvInt("INBOX_ID", 0)),
 		MaxTentativas:     getenvInt("MAX_TENTATIVAS", 3),
 		SACBaseURL:        strings.TrimRight(getenv("SAC_BASE_URL", ""), "/"),
 		SACPortalURL:      strings.TrimRight(getenv("SAC_PORTAL_URL", "https://atendimento.azapfy.com.br"), "/"),

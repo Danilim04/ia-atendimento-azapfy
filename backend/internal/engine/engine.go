@@ -74,6 +74,36 @@ func (e *Engine) HandleConversationUpdated(ctx context.Context, ev *chatwoot.Con
 	e.log.Debug("conversation_updated (sem ação nesta fase)", "conversation_id", ev.Conversation.ID)
 }
 
+// HandleConversationCreated coloca conversas novas na fila do bot: aplica a
+// LabelBot no conversation_created, escopado pela caixa INBOX_ID (0 = todas).
+// É o próprio bot que etiqueta — mesmo padrão do triage-bot do omni-route —
+// porque automation rule nativa do Chatwoot não é gerenciada pelo omni-route
+// (viraria configuração fantasma, invisível no painel do produto).
+func (e *Engine) HandleConversationCreated(ctx context.Context, ev *chatwoot.ConversationCreated) {
+	if e.cfg.LabelBot == "" {
+		return
+	}
+	if e.cfg.InboxID != 0 && ev.InboxID != e.cfg.InboxID {
+		e.log.Debug("conversa nova fora da caixa do bot",
+			"conversation_id", ev.ID, "inbox_id", ev.InboxID)
+		return
+	}
+	// Já etiquetada (redelivery do webhook, ou humano já assumiu) — não mexe.
+	if chatwoot.HasLabel(ev.Labels, e.cfg.LabelBot) ||
+		(e.cfg.LabelHumano != "" && chatwoot.HasLabel(ev.Labels, e.cfg.LabelHumano)) {
+		return
+	}
+	// SetLabels SUBSTITUI o conjunto inteiro — preserva as existentes.
+	labels := append(append([]string{}, ev.Labels...), e.cfg.LabelBot)
+	if err := e.cw.SetLabels(ctx, ev.ID, labels); err != nil {
+		e.log.Error("aplicar etiqueta do bot na conversa nova",
+			"conversation_id", ev.ID, "err", err)
+		return
+	}
+	e.log.Info("conversa nova na fila do bot",
+		"conversation_id", ev.ID, "inbox_id", ev.InboxID, "label", e.cfg.LabelBot)
+}
+
 func (e *Engine) encaminhar(ctx context.Context, conv *chatwoot.Conversation, phone, content string, res identity.Resultado) {
 	var login string
 	if res.Perfil != nil {

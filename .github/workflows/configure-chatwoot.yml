@@ -1,37 +1,25 @@
 # ==============================================================================
-# Configura a CAIXA DE ENTRADA do bot no Chatwoot da VM — sob demanda
-# (Run workflow). Roda deploy/chatwoot/setup-inbox.rb dentro do container
-# rails: etiquetas fila-bot/fila-humano, usuário "Zapin (bot)", webhook
-# → gateway e automação "conversa nova da caixa → fila-bot". Idempotente:
-# pode rodar quantas vezes precisar (VM nova, token rotacionado, caixa nova).
+# Configura o BOT na instância omni-route da VM — sob demanda (Run workflow).
+# Roda deploy/chatwoot/setup-bot.sh num container na rede do Chatwoot:
 #
-# O laço do token fecha SOZINHO: o access token do "Zapin (bot)" é gravado
-# como ESTADO da VM (/opt/azapfy-bot/.chatwoot-token — o valor nunca sai da
-# máquina), aplicado no .env (apply-server-state.sh) e o gateway é recarregado.
-# Todo Deploy futuro reaplica o mesmo estado. Nada de copiar token à mão.
+#   · usuário "Zapin (bot)"  → PELA API DO OMNI-ROUTE (POST /api/users/workspace)
+#   · token do Chatwoot      → login workspace do bot no omni → estado da VM
+#                              (.chatwoot-token; o valor nunca sai da máquina)
+#   · etiquetas e webhook    → API do Chatwoot (mesmo caminho do front do omni)
+#   · automation rule        → removida (o omni não gerencia; quem etiqueta
+#                              conversa nova é o gateway, no conversation_created
+#                              — escopo pela INBOX_ID do .env)
+#   · verificação            → GET /api/auth/workspace/me na API do omni
 #
-# Secrets exigidos: SSH_PRIVATE_KEY · WEBHOOK_TOKEN
+# Idempotente: rode quantas vezes precisar (VM nova, token rotacionado). Ao
+# final, aplica o token no .env e recarrega o gateway — sem passo manual.
+#
+# Secrets exigidos: SSH_PRIVATE_KEY (credenciais do omni são lidas NA VM).
 # ==============================================================================
 name: Configurar Chatwoot (caixa do bot)
 
 on:
   workflow_dispatch:
-    inputs:
-      account_id:
-        description: 'Conta do Chatwoot'
-        required: true
-        type: string
-        default: '1'
-      inbox_id:
-        description: 'Caixa de entrada que o bot vai atender'
-        required: true
-        type: string
-        default: '2'
-      rails_container:
-        description: 'Nome do container rails do Chatwoot na VM'
-        required: true
-        type: string
-        default: 'omniroute-chatwoot-rails-1'
 
 concurrency:
   group: configure-chatwoot
@@ -62,34 +50,20 @@ jobs:
           test -n "$ip" || { echo "ansible_host não encontrado no inventário"; exit 1; }
           echo "ip=$ip" >> "$GITHUB_OUTPUT"
 
-      # O token entra no script por sed e viaja só pelo stdin do SSH — nunca
-      # aparece em argv nem no ps da VM.
-      - name: Provisiona a caixa no Chatwoot
-        env:
-          WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
+      # O script viaja por stdin e roda num container na rede do Chatwoot;
+      # credenciais do omni (/omni.env) e estado do bot (/state) são da VM.
+      - name: Provisiona o bot via API do omni-route
         run: |
-          sed -e "s/__BOT_WEBHOOK_TOKEN__/${WEBHOOK_TOKEN}/" \
-              -e "s/__ACCOUNT_ID__/${{ inputs.account_id }}/" \
-              -e "s/__INBOX_ID__/${{ inputs.inbox_id }}/" \
-              deploy/chatwoot/setup-inbox.rb \
-          | ssh -i ~/.ssh/id_bot -o StrictHostKeyChecking=accept-new \
-              deploy@'${{ steps.vm.outputs.ip }}' \
-              "docker exec -i '${{ inputs.rails_container }}' bundle exec rails runner -"
+          ssh -i ~/.ssh/id_bot -o StrictHostKeyChecking=accept-new \
+            deploy@'${{ steps.vm.outputs.ip }}' \
+            'docker run --rm -i --network omniroute_default \
+               -v /opt/omni-route/.env:/omni.env:ro \
+               -v /opt/azapfy-bot:/state \
+               -e HOST_UID=$(id -u) -e HOST_GID=$(id -g) \
+               alpine:3.22 sh -s' < deploy/chatwoot/setup-bot.sh
 
-      # O token do bot vira ESTADO da VM: o rails imprime e o redirecionamento
-      # acontece NA VM — o valor nunca chega ao runner nem a argv/ps.
-      - name: Grava o token do bot como estado da VM
-        run: |
-          ssh -i ~/.ssh/id_bot deploy@'${{ steps.vm.outputs.ip }}' \
-            "umask 077 && docker exec -i '${{ inputs.rails_container }}' \
-               bundle exec rails runner - 2>/dev/null \
-               | tail -1 | tr -d '[:space:]' > /opt/azapfy-bot/.chatwoot-token \
-             && [ -s /opt/azapfy-bot/.chatwoot-token ]" \
-            < deploy/chatwoot/print-bot-token.rb
-          echo "token gravado em /opt/azapfy-bot/.chatwoot-token"
-
-      # Se a stack já estiver deployada, aplica no .env e recarrega o gateway
-      # agora; senão, o próximo Deploy aplica (apply-server-state.sh roda lá).
+      # Se a stack já estiver deployada, aplica o token no .env e recarrega o
+      # gateway agora; senão, o próximo Deploy aplica (apply-server-state.sh).
       - name: Aplica no .env e recarrega o gateway
         run: |
           ssh -i ~/.ssh/id_bot deploy@'${{ steps.vm.outputs.ip }}' \

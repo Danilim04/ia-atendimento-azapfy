@@ -19,6 +19,7 @@ import (
 type Engine interface {
 	HandleMessageCreated(ctx context.Context, msg *chatwoot.MessageCreated)
 	HandleConversationUpdated(ctx context.Context, ev *chatwoot.ConversationUpdated)
+	HandleConversationCreated(ctx context.Context, ev *chatwoot.ConversationCreated)
 }
 
 // Server recebe webhooks e os enfileira para processamento assíncrono.

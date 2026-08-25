@@ -73,11 +73,16 @@ registry no futuro, troque o passo 3 do `deploy-remote.sh` por push/pull.
    (conectando como root; depois disso tudo entra como `deploy`).
 3. Cadastre os secrets acima e rode a pipeline **Deploy** (converge o estado
    via Ansible e sobe a stack).
-4. Rode a pipeline **Configurar Chatwoot (caixa do bot)** com a conta/caixa
-   alvo — ela cria etiquetas, o usuário "Zapin (bot)", o webhook e a
-   automação da caixa (`deploy/chatwoot/setup-inbox.rb`, idempotente), grava
-   o token do bot como estado da VM (`.chatwoot-token`) e recarrega o
+4. Rode a pipeline **Configurar Chatwoot (caixa do bot)** — ela provisiona o
+   bot **pela API do omni-route** (`deploy/chatwoot/setup-bot.sh`,
+   idempotente): usuário "Zapin (bot)" via `POST /api/users/workspace`, token
+   via login workspace do bot (vira estado da VM, `.chatwoot-token`),
+   etiquetas e webhook pela API do Chatwoot (o mesmo caminho do front do
+   omni), verificação via `GET /api/auth/workspace/me`, e recarrega o
    gateway. **Sem passo manual**: ao final dela o bot está atendendo.
+   Conversa nova entra na fila do bot pelo próprio gateway
+   (`conversation_created` → aplica `fila-bot`, escopo pela `INBOX_ID` do
+   `.env`) — sem automation rule no Chatwoot, que o omni-route não gerencia.
 
 ## Break-glass (deploy da máquina local, sem Actions)
 
