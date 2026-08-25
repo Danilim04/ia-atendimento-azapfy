@@ -62,14 +62,19 @@ registry no futuro, troque o passo 3 do `deploy-remote.sh` por push/pull.
 
 ## Primeira vez num servidor novo
 
-1. `infra/terraform`: `terraform init && terraform apply` (adota/cria a VM).
+1. `infra/terraform`: ajuste o `terraform.tfvars`, `terraform init && apply`
+   (cria/adota a VM); atualize o `ansible_host` no inventário.
 2. Autorize a chave do CI:
    `ansible-playbook playbooks/bootstrap.yml -e "{\"deploy_ssh_public_key\": \"$(cat ~/.ssh/azapfy_deploy.pub)\"}"`
    (conectando como root; depois disso tudo entra como `deploy`).
-3. Cadastre os secrets acima e rode a pipeline.
-4. No Chatwoot (conta 1 → Configurações → Integrações → Webhooks): cadastre
-   `http://azapfy-bot:8080/webhook?token=<WEBHOOK_TOKEN>` assinando
-   `message_created` e `conversation_updated`.
+3. Cadastre os secrets acima e rode a pipeline **Deploy** (converge o estado
+   via Ansible e sobe a stack).
+4. Rode a pipeline **Configurar Chatwoot (caixa do bot)** com a conta/caixa
+   alvo — ela cria etiquetas, o usuário "Zapin (bot)", o webhook e a
+   automação da caixa (`deploy/chatwoot/setup-inbox.rb`, idempotente).
+5. Único laço manual: copie o access token do usuário "Zapin (bot)" (perfil
+   no Chatwoot) para o secret `CHATWOOT_API_TOKEN` e re-rode o **Deploy** —
+   o runner não tem permissão para escrever secrets.
 
 ## Break-glass (deploy da máquina local, sem Actions)
 

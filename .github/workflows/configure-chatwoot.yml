@@ -1,0 +1,77 @@
+# ==============================================================================
+# Configura a CAIXA DE ENTRADA do bot no Chatwoot da VM — sob demanda
+# (Run workflow). Roda deploy/chatwoot/setup-inbox.rb dentro do container
+# rails: etiquetas fila-bot/fila-humano, usuário "Zapin (bot)", webhook
+# → gateway e automação "conversa nova da caixa → fila-bot". Idempotente:
+# pode rodar quantas vezes precisar (VM nova, token rotacionado, caixa nova).
+#
+# Depois de rodar numa instância NOVA, falta só 1 passo manual: copiar o
+# access token do usuário "Zapin (bot)" (perfil no Chatwoot) para o secret
+# CHATWOOT_API_TOKEN e re-rodar o Deploy — o GITHUB_TOKEN do runner não tem
+# permissão para escrever secrets, então esse laço não fecha sozinho.
+#
+# Secrets exigidos: SSH_PRIVATE_KEY · WEBHOOK_TOKEN
+# ==============================================================================
+name: Configurar Chatwoot (caixa do bot)
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'Conta do Chatwoot'
+        required: true
+        type: string
+        default: '1'
+      inbox_id:
+        description: 'Caixa de entrada que o bot vai atender'
+        required: true
+        type: string
+        default: '2'
+      rails_container:
+        description: 'Nome do container rails do Chatwoot na VM'
+        required: true
+        type: string
+        default: 'omniroute-chatwoot-rails-1'
+
+concurrency:
+  group: configure-chatwoot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Chave SSH do deploy
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_bot
+          chmod 600 ~/.ssh/id_bot
+
+      - name: Resolve o IP da VM
+        id: vm
+        run: |
+          ip="$(awk '/ansible_host:/ { print $2; exit }' infra/ansible/inventories/prod/hosts.yml)"
+          test -n "$ip" || { echo "ansible_host não encontrado no inventário"; exit 1; }
+          echo "ip=$ip" >> "$GITHUB_OUTPUT"
+
+      # O token entra no script por sed e viaja só pelo stdin do SSH — nunca
+      # aparece em argv nem no ps da VM.
+      - name: Provisiona a caixa no Chatwoot
+        env:
+          WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
+        run: |
+          sed -e "s/__BOT_WEBHOOK_TOKEN__/${WEBHOOK_TOKEN}/" \
+              -e "s/__ACCOUNT_ID__/${{ inputs.account_id }}/" \
+              -e "s/__INBOX_ID__/${{ inputs.inbox_id }}/" \
+              deploy/chatwoot/setup-inbox.rb \
+          | ssh -i ~/.ssh/id_bot -o StrictHostKeyChecking=accept-new \
+              deploy@'${{ steps.vm.outputs.ip }}' \
+              "docker exec -i '${{ inputs.rails_container }}' bundle exec rails runner -"

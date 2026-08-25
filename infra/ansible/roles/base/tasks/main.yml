@@ -51,6 +51,28 @@
     line: 'PermitRootLogin prohibit-password'
   notify: reiniciar sshd
 
+# --- DNS resiliente (systemd-resolved) ----------------------------------------
+# Os recursores da Hetzner (185.12.64.x) têm períodos de timeout que derrubam a
+# resolução no host E nos containers (o Docker repassa os upstreams do resolved
+# aos containers). Sintoma real visto em produção: api3.azapfy.com.br e
+# db-beta "inalcançáveis" com o IP respondendo normal. Upstreams públicos como
+# primários; os da Hetzner ficam de fallback.
+- name: Diretório de drop-ins do resolved
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    mode: '0755'
+
+- name: DNS público primário + fallback Hetzner
+  ansible.builtin.copy:
+    dest: /etc/systemd/resolved.conf.d/10-azapfy-dns.conf
+    content: |
+      [Resolve]
+      DNS=1.1.1.1 8.8.8.8
+      FallbackDNS=185.12.64.1 185.12.64.2
+    mode: '0644'
+  notify: reiniciar systemd-resolved
+
 # --- Pacotes base -------------------------------------------------------------
 - name: Pacotes base
   ansible.builtin.apt:
