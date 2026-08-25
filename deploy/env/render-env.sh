@@ -11,8 +11,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-required=(IMAGE_TAG OPENROUTER_API_KEY MONGO_URI CHATWOOT_API_TOKEN
-  WEBHOOK_TOKEN TOOLS_API_TOKEN)
+# CHATWOOT_API_TOKEN é OPCIONAL aqui: a fonte primária é o estado da VM
+# (.chatwoot-token, gravado pela pipeline configure-chatwoot e aplicado por
+# apply-server-state.sh POR CIMA do valor renderizado). O secret, se existir,
+# serve só de bootstrap/override manual.
+required=(IMAGE_TAG OPENROUTER_API_KEY MONGO_URI WEBHOOK_TOKEN TOOLS_API_TOKEN)
 
 faltando=()
 for var in "${required[@]}"; do

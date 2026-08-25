@@ -36,6 +36,8 @@ LOG_LEVEL=info
 # --- Gateway: Chatwoot (por DENTRO da rede docker do servidor) ----------------
 CHATWOOT_BASE_URL=http://chatwoot-rails:3000
 CHATWOOT_ACCOUNT_ID=1
+# Preenchido pelo ESTADO da VM (.chatwoot-token → apply-server-state.sh) por
+# cima do que o CI renderizar; o secret é só bootstrap/override manual.
 CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
 WEBHOOK_TOKEN=${WEBHOOK_TOKEN}
 WEBHOOK_SECRET=

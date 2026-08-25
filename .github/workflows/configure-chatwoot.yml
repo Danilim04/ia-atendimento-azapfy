@@ -5,10 +5,10 @@
 # → gateway e automação "conversa nova da caixa → fila-bot". Idempotente:
 # pode rodar quantas vezes precisar (VM nova, token rotacionado, caixa nova).
 #
-# Depois de rodar numa instância NOVA, falta só 1 passo manual: copiar o
-# access token do usuário "Zapin (bot)" (perfil no Chatwoot) para o secret
-# CHATWOOT_API_TOKEN e re-rodar o Deploy — o GITHUB_TOKEN do runner não tem
-# permissão para escrever secrets, então esse laço não fecha sozinho.
+# O laço do token fecha SOZINHO: o access token do "Zapin (bot)" é gravado
+# como ESTADO da VM (/opt/azapfy-bot/.chatwoot-token — o valor nunca sai da
+# máquina), aplicado no .env (apply-server-state.sh) e o gateway é recarregado.
+# Todo Deploy futuro reaplica o mesmo estado. Nada de copiar token à mão.
 #
 # Secrets exigidos: SSH_PRIVATE_KEY · WEBHOOK_TOKEN
 # ==============================================================================
@@ -75,3 +75,27 @@ jobs:
           | ssh -i ~/.ssh/id_bot -o StrictHostKeyChecking=accept-new \
               deploy@'${{ steps.vm.outputs.ip }}' \
               "docker exec -i '${{ inputs.rails_container }}' bundle exec rails runner -"
+
+      # O token do bot vira ESTADO da VM: o rails imprime e o redirecionamento
+      # acontece NA VM — o valor nunca chega ao runner nem a argv/ps.
+      - name: Grava o token do bot como estado da VM
+        run: |
+          ssh -i ~/.ssh/id_bot deploy@'${{ steps.vm.outputs.ip }}' \
+            "umask 077 && docker exec -i '${{ inputs.rails_container }}' \
+               bundle exec rails runner - 2>/dev/null \
+               | tail -1 | tr -d '[:space:]' > /opt/azapfy-bot/.chatwoot-token \
+             && [ -s /opt/azapfy-bot/.chatwoot-token ]" \
+            < deploy/chatwoot/print-bot-token.rb
+          echo "token gravado em /opt/azapfy-bot/.chatwoot-token"
+
+      # Se a stack já estiver deployada, aplica no .env e recarrega o gateway
+      # agora; senão, o próximo Deploy aplica (apply-server-state.sh roda lá).
+      - name: Aplica no .env e recarrega o gateway
+        run: |
+          ssh -i ~/.ssh/id_bot deploy@'${{ steps.vm.outputs.ip }}' \
+            "if [ -x /opt/azapfy-bot/deploy/env/apply-server-state.sh ]; then
+               /opt/azapfy-bot/deploy/env/apply-server-state.sh &&
+               cd /opt/azapfy-bot && docker compose up -d gateway
+             else
+               echo 'stack ainda não deployada — o próximo Deploy aplica o token'
+             fi"

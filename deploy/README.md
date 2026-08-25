@@ -52,10 +52,14 @@ Dispara a cada push na `main` (ou `Run workflow` com uma tag à escolha):
 | `SSH_PRIVATE_KEY` | chave privada do user `deploy` da VPS (par autorizado via Ansible) |
 | `OPENROUTER_API_KEY` | chave do OpenRouter (cérebro) |
 | `MONGO_URI` | Mongo da Azapfy (lookup de usuário do gate) |
-| `CHATWOOT_API_TOKEN` | token de API do Chatwoot local (conta 1) |
 | `WEBHOOK_TOKEN` | segredo do `?token=` da URL de webhook cadastrada no Chatwoot |
 | `TOOLS_API_TOKEN` | segredo compartilhado cérebro↔gateway (tools SAC) |
-| `SAC_API_TOKEN` · `SAC_SERVICE_COD` | opcionais (integração SAC) |
+| `SAC_API_TOKEN` · `SAC_SERVICE_COD` · `CHATWOOT_API_TOKEN` | opcionais (SAC; o token do Chatwoot é só bootstrap/override) |
+
+O `CHATWOOT_API_TOKEN` de verdade é **estado da VM**: a pipeline "Configurar
+Chatwoot" grava o access token do usuário "Zapin (bot)" em
+`/opt/azapfy-bot/.chatwoot-token` (o valor nunca sai da máquina) e o
+`apply-server-state.sh` o aplica no `.env` — nesta hora e em todo Deploy.
 
 Sem registry de imagens ⇒ sem secrets de Docker Hub/GHCR. Para migrar para
 registry no futuro, troque o passo 3 do `deploy-remote.sh` por push/pull.
@@ -71,10 +75,9 @@ registry no futuro, troque o passo 3 do `deploy-remote.sh` por push/pull.
    via Ansible e sobe a stack).
 4. Rode a pipeline **Configurar Chatwoot (caixa do bot)** com a conta/caixa
    alvo — ela cria etiquetas, o usuário "Zapin (bot)", o webhook e a
-   automação da caixa (`deploy/chatwoot/setup-inbox.rb`, idempotente).
-5. Único laço manual: copie o access token do usuário "Zapin (bot)" (perfil
-   no Chatwoot) para o secret `CHATWOOT_API_TOKEN` e re-rode o **Deploy** —
-   o runner não tem permissão para escrever secrets.
+   automação da caixa (`deploy/chatwoot/setup-inbox.rb`, idempotente), grava
+   o token do bot como estado da VM (`.chatwoot-token`) e recarrega o
+   gateway. **Sem passo manual**: ao final dela o bot está atendendo.
 
 ## Break-glass (deploy da máquina local, sem Actions)
 

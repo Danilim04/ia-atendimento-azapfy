@@ -53,19 +53,25 @@ fi
 echo "→ [2/7] Allowlist + rsync da stack…"
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
-mkdir -p "$staging/deploy"
+mkdir -p "$staging/deploy/env"
 cp docker-compose.yml docker-compose.prod.yml "$staging/"
 cp deploy/healthcheck.sh "$staging/deploy/"
-rsync -az --delete --exclude='.env' \
+cp deploy/env/apply-server-state.sh "$staging/deploy/env/"
+# --exclude protege o ESTADO da VM: .env (reescrito no passo 4) e
+# .chatwoot-token (gravado pela pipeline configure-chatwoot).
+rsync -az --delete --exclude='.env' --exclude='.chatwoot-token' \
   -e "ssh ${SSH_OPTS[*]}" \
   "$staging/" "${SSH_USER}@${HOST}:${DEST}/"
-"${SSH[@]}" "chmod +x $DEST/deploy/healthcheck.sh"
+"${SSH[@]}" "chmod +x $DEST/deploy/healthcheck.sh $DEST/deploy/env/apply-server-state.sh"
 
 echo "→ [3/7] Transferindo imagens (docker save | ssh docker load)…"
 docker save "$BRAIN_IMG" "$GATEWAY_IMG" | gzip | "${SSH[@]}" 'gunzip | docker load'
 
-echo "→ [4/7] .env (por stdin, chmod 600)…"
+echo "→ [4/7] .env (por stdin, chmod 600) + estado do servidor…"
 "${SSH[@]}" "umask 077 && cat > $DEST/.env" < "$ENV_FILE"
+# CHATWOOT_API_TOKEN vem do estado da VM (.chatwoot-token) quando existir —
+# ver deploy/env/apply-server-state.sh.
+"${SSH[@]}" "$DEST/deploy/env/apply-server-state.sh"
 
 echo "→ [5/7] Up da stack (sem build)…"
 "${SSH[@]}" "cd $DEST && docker compose up -d --remove-orphans --wait --wait-timeout 300"
