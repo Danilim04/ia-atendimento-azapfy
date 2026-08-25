@@ -61,20 +61,42 @@ ACC="$(echo "$ADMIN_JSON" | jq -r .chatwoot.accountId)"
 echo "→ login admin no omni ok (conta $ACC)"
 
 # --- 2. Usuário do bot VIA OMNI-ROUTE ----------------------------------------
-CREATE_JSON="$(jq -n --arg n "$BOT_NAME" --arg e "$BOT_EMAIL" \
+# 201 + generatedPassword = criado agora. 409 (ou 201 sem senha aplicada) =
+# já existia — o caminho oficial do omni é "Redefinir senha", então: tenta a
+# credencial de estado da VM; se não servir, reset pelo omni (platform token).
+ws_login() { # ws_login <email> <senha> → JSON no stdout (vazio se falhar)
+  jq -n --arg e "$1" --arg p "$2" '{email:$e,password:$p}' \
+    | curl -sf -X POST "$API/api/auth/workspace/login" \
+        -H 'Content-Type: application/json' -d @- || true
+}
+
+CREATE_RESP="$(jq -n --arg n "$BOT_NAME" --arg e "$BOT_EMAIL" \
     '{name:$n,email:$e,role:"administrator"}' \
-  | curl -sf -X POST "$API/api/users/workspace" \
-      -H "Authorization: Bearer $ADMIN_JWT" -H 'Content-Type: application/json' -d @-)" \
-  || falha "POST /api/users/workspace falhou"
-BOT_PASS="$(echo "$CREATE_JSON" | jq -r '.generatedPassword // empty')"
-if [ -n "$BOT_PASS" ]; then
-  echo "→ usuário do bot criado pelo omni-route"
-elif [ -s "$STATE/.zapin-credentials" ]; then
+  | curl -s -w '\n%{http_code}' -X POST "$API/api/users/workspace" \
+      -H "Authorization: Bearer $ADMIN_JWT" -H 'Content-Type: application/json' -d @-)"
+CREATE_CODE="$(echo "$CREATE_RESP" | tail -1)"
+CREATE_JSON="$(echo "$CREATE_RESP" | sed '$d')"
+
+BOT_PASS=''
+if [ "$CREATE_CODE" = 201 ]; then
+  BOT_PASS="$(echo "$CREATE_JSON" | jq -r '.generatedPassword // empty')"
+  [ -n "$BOT_PASS" ] && echo "→ usuário do bot criado pelo omni-route"
+elif [ "$CREATE_CODE" != 409 ]; then
+  echo "$CREATE_JSON" | head -3 >&2
+  falha "POST /api/users/workspace devolveu HTTP $CREATE_CODE"
+fi
+
+BOT_JSON=''
+if [ -z "$BOT_PASS" ] && [ -s "$STATE/.zapin-credentials" ]; then
   BOT_PASS="$(envval "$STATE/.zapin-credentials" ZAPIN_PASSWORD)"
-  echo "→ usuário já existia — usando credencial do estado da VM"
-else
-  # Existia fora do caminho (ex.: criado à mão) e sem senha conhecida:
-  # converge via reset de senha DO OMNI (platform token, auditado).
+  BOT_JSON="$(ws_login "$BOT_EMAIL" "$BOT_PASS")"
+  if [ -n "$BOT_JSON" ]; then
+    echo "→ usuário já existia — credencial do estado da VM ainda vale"
+  else
+    BOT_PASS='' # senha de estado envelheceu — cai para o reset
+  fi
+fi
+if [ -z "$BOT_PASS" ]; then
   BOT_ID="$(curl -sf "$CW/api/v1/accounts/$ACC/agents" -H "api_access_token: $ADMIN_CW_TOKEN" \
     | jq -r --arg e "$BOT_EMAIL" '.[] | select(.email==$e) | .id' | head -1)"
   [ -n "$BOT_ID" ] || falha "usuário $BOT_EMAIL não encontrado para reset"
@@ -87,9 +109,8 @@ umask 077
 printf 'ZAPIN_EMAIL=%s\nZAPIN_PASSWORD=%s\n' "$BOT_EMAIL" "$BOT_PASS" > "$STATE/.zapin-credentials"
 
 # --- 3. Login do BOT no omni → token do Chatwoot (estado da VM) ---------------
-BOT_JSON="$(jq -n --arg e "$BOT_EMAIL" --arg p "$BOT_PASS" '{email:$e,password:$p}' \
-  | curl -sf -X POST "$API/api/auth/workspace/login" -H 'Content-Type: application/json' -d @-)" \
-  || falha "login do bot na API do omni falhou"
+[ -n "$BOT_JSON" ] || BOT_JSON="$(ws_login "$BOT_EMAIL" "$BOT_PASS")"
+[ -n "$BOT_JSON" ] || falha "login do bot na API do omni falhou"
 echo "$BOT_JSON" | jq -r .chatwoot.accessToken | tr -d '\n' > "$STATE/.chatwoot-token"
 [ -s "$STATE/.chatwoot-token" ] || falha "token do bot veio vazio"
 echo "→ token do bot gravado como estado da VM (.chatwoot-token)"
