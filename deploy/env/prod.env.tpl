@@ -48,8 +48,9 @@ PUBLIC_BASE_URL=http://azapfy-bot:8080
 LABEL_BOT=fila-bot
 LABEL_HUMANO=fila-humano
 # Caixa de entrada cujas conversas NOVAS o gateway etiqueta com fila-bot no
-# conversation_created (2 = caixa "whatsapp" da conta Omni Route; 0 = todas).
-INBOX_ID=2
+# conversation_created (3 = caixa "whatsapp-infodesk" da conta Omni Route,
+# a caixa do suporte que o bot atende; 0 = todas).
+INBOX_ID=3
 CONFIRM_FIELD=email
 MAX_TENTATIVAS=3
 IDENTITY_TTL=24h

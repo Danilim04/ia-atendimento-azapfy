@@ -116,16 +116,27 @@ echo "$BOT_JSON" | jq -r .chatwoot.accessToken | tr -d '\n' > "$STATE/.chatwoot-
 echo "→ token do bot gravado como estado da VM (.chatwoot-token)"
 
 # --- 4. Etiquetas (mesma API que o front do omni usa) -------------------------
-TITULOS="$(curl -sf "$CW/api/v1/accounts/$ACC/labels" -H "api_access_token: $ADMIN_CW_TOKEN" \
-  | jq -r '.payload[].title')"
+# CONVERGE, não só cria: etiqueta existente ganha PATCH para o estado desejado.
+# show_on_sidebar:true é obrigatório — sem ele a etiqueta existe na API mas
+# fica INVISÍVEL na barra lateral/filtros do produto (foi o sintoma real:
+# "as etiquetas não aparecem no omni-router").
+LABELS_JSON="$(curl -sf "$CW/api/v1/accounts/$ACC/labels" -H "api_access_token: $ADMIN_CW_TOKEN")"
 for l in "$LABEL_BOT" "$LABEL_HUMANO"; do
-  if echo "$TITULOS" | grep -qx "$l"; then
-    echo "→ etiqueta $l já existe"
+  case "$l" in
+    "$LABEL_BOT") cor='#1F93FF'; desc='Fila do bot Zapin (em atendimento pela IA)' ;;
+    *)            cor='#F97316'; desc='Fila humana (transbordo do bot Zapin)' ;;
+  esac
+  BODY="$(jq -n --arg t "$l" --arg c "$cor" --arg d "$desc" \
+    '{title:$t,color:$c,show_on_sidebar:true,description:$d}')"
+  LID="$(echo "$LABELS_JSON" | jq -r --arg t "$l" '.payload[] | select(.title==$t) | .id' | head -1)"
+  if [ -n "$LID" ]; then
+    echo "$BODY" | curl -sf -X PATCH "$CW/api/v1/accounts/$ACC/labels/$LID" \
+      -H "api_access_token: $ADMIN_CW_TOKEN" -H 'Content-Type: application/json' -d @- > /dev/null \
+      || falha "convergir etiqueta $l (id $LID)"
+    echo "→ etiqueta $l convergida (id $LID, visível na sidebar)"
   else
-    jq -n --arg t "$l" \
-      '{title:$t,color:"#1F93FF",show_on_sidebar:true,description:"Fila do bot Zapin"}' \
-      | curl -sf -X POST "$CW/api/v1/accounts/$ACC/labels" \
-          -H "api_access_token: $ADMIN_CW_TOKEN" -H 'Content-Type: application/json' -d @- > /dev/null \
+    echo "$BODY" | curl -sf -X POST "$CW/api/v1/accounts/$ACC/labels" \
+      -H "api_access_token: $ADMIN_CW_TOKEN" -H 'Content-Type: application/json' -d @- > /dev/null \
       || falha "criar etiqueta $l"
     echo "→ etiqueta $l criada"
   fi
