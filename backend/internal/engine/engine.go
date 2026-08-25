@@ -41,9 +41,17 @@ func (e *Engine) HandleMessageCreated(ctx context.Context, msg *chatwoot.Message
 	}
 	// Gate de etiqueta (opcional): só atua na fila do bot. Vazio = processa tudo.
 	if e.cfg.LabelBot != "" && !chatwoot.HasLabel(msg.Conversation.Labels, e.cfg.LabelBot) {
-		e.log.Info("mensagem ignorada: conversa sem a etiqueta do bot",
-			"conversation_id", convID, "label_bot", e.cfg.LabelBot)
-		return
+		// O Chatwoot REABRE conversa resolvida quando o contato volta a
+		// escrever — não há conversation_created. Conversa da caixa do bot sem
+		// NENHUMA etiqueta de fila é adotada aqui mesmo; com fila-humano (ou
+		// fora da caixa), continua ignorada.
+		if !e.adotarConversa(ctx, &msg.Conversation) {
+			e.log.Info("mensagem ignorada: conversa sem a etiqueta do bot",
+				"conversation_id", convID, "label_bot", e.cfg.LabelBot)
+			return
+		}
+		e.log.Info("conversa adotada pela fila do bot (reaberta/sem etiqueta)",
+			"conversation_id", convID)
 	}
 
 	content := strings.TrimSpace(msg.Content)
@@ -80,28 +88,36 @@ func (e *Engine) HandleConversationUpdated(ctx context.Context, ev *chatwoot.Con
 // porque automation rule nativa do Chatwoot não é gerenciada pelo omni-route
 // (viraria configuração fantasma, invisível no painel do produto).
 func (e *Engine) HandleConversationCreated(ctx context.Context, ev *chatwoot.ConversationCreated) {
+	if e.adotarConversa(ctx, &ev.Conversation) {
+		e.log.Info("conversa nova na fila do bot",
+			"conversation_id", ev.ID, "inbox_id", ev.InboxID, "label", e.cfg.LabelBot)
+	}
+}
+
+// adotarConversa aplica a LabelBot se a conversa for elegível: na caixa do bot
+// (INBOX_ID; 0 = todas) e sem NENHUMA etiqueta de fila — nem bot (nada a
+// fazer) nem humano (a conversa é da equipe). Devolve true se etiquetou.
+func (e *Engine) adotarConversa(ctx context.Context, conv *chatwoot.Conversation) bool {
 	if e.cfg.LabelBot == "" {
-		return
+		return false
 	}
-	if e.cfg.InboxID != 0 && ev.InboxID != e.cfg.InboxID {
-		e.log.Debug("conversa nova fora da caixa do bot",
-			"conversation_id", ev.ID, "inbox_id", ev.InboxID)
-		return
+	if e.cfg.InboxID != 0 && conv.InboxID != e.cfg.InboxID {
+		e.log.Debug("conversa fora da caixa do bot",
+			"conversation_id", conv.ID, "inbox_id", conv.InboxID)
+		return false
 	}
-	// Já etiquetada (redelivery do webhook, ou humano já assumiu) — não mexe.
-	if chatwoot.HasLabel(ev.Labels, e.cfg.LabelBot) ||
-		(e.cfg.LabelHumano != "" && chatwoot.HasLabel(ev.Labels, e.cfg.LabelHumano)) {
-		return
+	if chatwoot.HasLabel(conv.Labels, e.cfg.LabelBot) ||
+		(e.cfg.LabelHumano != "" && chatwoot.HasLabel(conv.Labels, e.cfg.LabelHumano)) {
+		return false
 	}
 	// SetLabels SUBSTITUI o conjunto inteiro — preserva as existentes.
-	labels := append(append([]string{}, ev.Labels...), e.cfg.LabelBot)
-	if err := e.cw.SetLabels(ctx, ev.ID, labels); err != nil {
-		e.log.Error("aplicar etiqueta do bot na conversa nova",
-			"conversation_id", ev.ID, "err", err)
-		return
+	labels := append(append([]string{}, conv.Labels...), e.cfg.LabelBot)
+	if err := e.cw.SetLabels(ctx, conv.ID, labels); err != nil {
+		e.log.Error("aplicar etiqueta do bot",
+			"conversation_id", conv.ID, "err", err)
+		return false
 	}
-	e.log.Info("conversa nova na fila do bot",
-		"conversation_id", ev.ID, "inbox_id", ev.InboxID, "label", e.cfg.LabelBot)
+	return true
 }
 
 func (e *Engine) encaminhar(ctx context.Context, conv *chatwoot.Conversation, phone, content string, res identity.Resultado) {
