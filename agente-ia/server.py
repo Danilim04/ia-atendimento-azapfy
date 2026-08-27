@@ -22,6 +22,7 @@ consultas de dados ao usuário autorizado.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import threading
@@ -228,8 +229,15 @@ async def _lifespan(app: FastAPI):
         caminho.parent.mkdir(parents=True, exist_ok=True)
         saver_cm = AsyncSqliteSaver.from_conn_string(str(caminho))
         saver = await saver_cm.__aenter__()
+        # Exercita a conexão JÁ NO STARTUP: incompatibilidade de versão do
+        # aiosqlite só estoura no primeiro uso, e sem isto o fail-soft abaixo
+        # nunca dispara — o server subiria "saudável" com todo /chat em 500.
+        await saver.setup()
         logger.info("checkpointer_sqlite path=%s", caminho)
     except Exception as exc:  # noqa: BLE001 — fail-soft para MemorySaver
+        if saver_cm is not None:
+            with contextlib.suppress(Exception):
+                await saver_cm.__aexit__(None, None, None)
         saver_cm = None
         saver = None
         logger.warning(

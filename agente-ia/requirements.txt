@@ -8,6 +8,8 @@ langchain-huggingface>=0.1.0,<0.2.0
 langgraph>=0.2.50,<0.4.0
 # Checkpointer persistente (histórico de conversa sobrevive a restart do brain)
 langgraph-checkpoint-sqlite>=2.0.0,<3.0.0
+# aiosqlite 0.22 removeu Connection(Thread) e quebra o is_alive() do checkpointer
+aiosqlite>=0.21,<0.22
 
 # --- RAG ---
 chromadb>=0.5.0,<0.6.0
