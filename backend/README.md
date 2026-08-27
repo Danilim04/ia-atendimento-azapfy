@@ -13,14 +13,21 @@ ficam para a **fase seguinte**; este serviço entrega a fundação + a 1ª tool
 
 ```
 WhatsApp → Chatwoot ─webhook→ [bot-azapfy]
-   (HMAC/token, dedup, worker pool)
-        └─ gate de identidade (FSM + base própria SQLite)
+   (HMAC/token, dedup por delivery, worker pool)
+        └─ higiene de envelope (StripAssinatura) + dedup por WAID (source_id)
+           + descarte de eventos velhos (EVENTO_IDADE_MAX)
+        └─ fila FIFO POR CONVERSA + coalescência (DEBOUNCE_JANELA=8s,
+           teto DEBOUNCE_TETO=20s): a rajada do cliente vira UM turno;
+           nunca há dois turnos simultâneos na mesma conversa
+        └─ gate de identidade (FSM + base própria SQLite; GateFalha expira
+           após GATE_FALHA_TTL)
              1ª msg → pede login → resolve login → Mongo (BuscarPorLogin + projeção)
-                    → confirma e-mail/nome → cacheia (telefone→perfil, TTL)
+                    → confirma e-mail/nome (tolerante a texto ao redor)
+                    → cacheia (telefone→perfil, TTL)
         │  (identificado)
         │  Contrato A: POST /chat {conversation_id, mensagem, identidade, telefone}
         ▼
-   [cérebro Python] → reply → bot-azapfy → Chatwoot
+   [cérebro Python] → reply → FormatWhatsApp + QuebrarMensagem → Chatwoot
 ```
 
 A identidade é **resolvida no Go** e nunca é um argumento escolhido pelo LLM —
@@ -32,13 +39,14 @@ base do controle de acesso mecânico (não por prompt). O perfil transportado é
 Ao receber a mensagem de login, o gate (`resolverLogin` em `gate.go`) tenta nesta ordem:
 
 1. **Determinístico** (`loginCandidatos`): a mensagem crua, sua versão em
-   minúsculas e — **só quando ela é um CPF/CNPJ formatado puro** — os dígitos
-   (`105.966.936-64` → `10596693664`). A extração de dígitos é restrita a
-   CPF/CNPJ isolado de propósito: tirar dígitos de uma frase casaria o usuário
-   errado.
+   minúsculas, um CPF/CNPJ formatado puro (`105.966.936-64` → `10596693664`),
+   um **e-mail embutido na frase** (regex) e **sequências de exatamente 11/14
+   dígitos embutidas** (tolera pontuação trocada, ex.: `105.966.936.64`).
+   Dígitos soltos de frases não formam 11/14 dígitos por acaso, e o lookup no
+   Mongo é a validação real.
 2. **Fallback de IA** (`LoginExtractor`, opcional): se nada casa, o gate chama
    `POST /extract-login` no cérebro para extrair o login embutido numa frase
-   livre (ex.: *"meu login é joao"*, *"pode usar o email joao@x.com"*).
+   livre (ex.: *"meu login é joao"*).
 
 O lookup no Mongo é a **validação real** — candidatos inexistentes simplesmente
 não casam, então tentar vários não tem risco. O valor extraído pela IA é só um
@@ -47,12 +55,13 @@ fallback é **fail-soft**: IA fora do ar → segue como "não encontrado" e pede
 novo (não derruba o atendimento). `extractor` é injetado em `identity.New(...)`
 (nil = sem fallback de IA).
 
-### Persona "Zapin" (tom mineiro)
+### Persona "Zapin" (PT-BR neutro)
 
 As mensagens do gate (`msgPedirLogin`, `saudacao`, confirmação etc.) usam o tom
-**mineiro** caloroso do **Zapin**, o atendente virtual da Azapfy — alinhado ao
-`SYSTEM_PROMPT_AGENTE` do cérebro. O nome vive na const `nomeAssistente`; trocar
-ali muda todas as saudações. O tom é afetuoso, mas os passos continuam claros.
+**caloroso em português neutro** do **Zapin**, o atendente virtual da Azapfy —
+alinhado ao `SYSTEM_PROMPT_AGENTE` do cérebro (o sotaque mineiro foi removido
+por decisão pós-Conversa 34). O nome vive na const `nomeAssistente`; trocar ali
+muda todas as saudações. O tom é afetuoso, mas os passos continuam claros.
 
 ## Pacotes
 
@@ -64,7 +73,7 @@ ali muda todas as saudações. O tom é afetuoso, mas os passos continuam claros
 | `internal/mongo` | **1ª tool**: `BuscarPorLogin` + `Projetar` (grupos→empresas, só `ativo`) |
 | `internal/identity` | gate FSM (pede login → resolve login determinístico/IA → confirma → identifica/roteia) |
 | `internal/brain` | cliente do cérebro: Contrato A (`POST /chat`) + `ExtrairLogin` (`POST /extract-login`, satisfaz `identity.LoginExtractor`) |
-| `internal/engine` | orquestra webhook → gate → cérebro → Chatwoot |
+| `internal/engine` | orquestra webhook → higiene/dedup WAID → fila por conversa (coalescer.go) → gate → cérebro → formatação WhatsApp (whatsapp.go) → Chatwoot |
 | `cmd/bot` | wiring + servidor HTTP |
 
 ## Rodar

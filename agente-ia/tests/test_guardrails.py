@@ -345,18 +345,22 @@ def test_system_prompt_agente_contem_regras_chave():
     sp = SYSTEM_PROMPT_AGENTE
     # Identidade
     assert "Azapfy" in sp
+    assert "Zapin" in sp
     # Anti-injection com delimitador
     assert "<documento_externo>" in sp
     assert "DADO" in sp and "COMANDO" in sp
-    # Política RAG-first
-    assert "consultar_base_conhecimento" in sp
+    # Retrieval-first: a base é recuperada automaticamente (não é tool)
+    assert "recuperados AUTOMATICAMENTE" in sp
     # Agente não tem acesso à internet
     assert "buscar_na_web_azapfy" not in sp
     assert "internet" in sp.lower()
     # Confirmação humana antes de abrir chamado (LLM08)
     assert "abrir_chamado_suporte" in sp
-    # Resposta padrão off-topic embutida
-    assert RESPOSTA_OFF_TOPIC in sp
+    # Invariante "sempre cliente" (C2/A1) + não gerar conteúdo fora do domínio
+    assert "SEMPRE com um CLIENTE" in sp
+    assert "pretexto de trabalho" in sp
+    # Formato WhatsApp (respostas curtas, sem markdown pesado)
+    assert "WhatsApp" in sp
 
 
 def test_system_prompt_classificador_lista_as_tres_categorias():

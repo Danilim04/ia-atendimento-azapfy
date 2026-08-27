@@ -64,7 +64,11 @@ def test_abrir_chamado_envia_payload_e_token(captura):
     assert out["protocolo"] == "ZPRS25207690"
     enviado = chamadas[-1]
     assert enviado["url"].endswith("/tools/sac/criar")
-    assert enviado["headers"]["X-Tools-Token"] == ""  # default do .env.example
+    # O header carrega o token das settings — não fixamos o valor para o teste
+    # não depender do `.env` local (era a falha ambiental pré-existente).
+    from src.config import get_settings
+
+    assert enviado["headers"]["X-Tools-Token"] == get_settings().sac_tools_token
     assert enviado["json"]["categoria"] == "APLICATIVO"
     assert enviado["json"]["telefone"] == "5531983857490"
 

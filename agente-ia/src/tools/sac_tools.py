@@ -142,6 +142,7 @@ SAC_TOOLS = [
     listar_chamados_abertos,
 ]
 
-# Tools cujo `telefone` o `tools_node` injeta a partir do estado (a identidade
-# do relator vem do gate, nunca do LLM).
+# A injeção/validação de args de sessão agora é centralizada em
+# `src/agent/tool_policy.py` (POLITICAS) — fonte única de verdade sobre o que
+# o LLM pode fazer. Esta constante permanece só por compatibilidade.
 TOOLS_COM_CONTEXTO_SESSAO = frozenset(t.name for t in SAC_TOOLS)

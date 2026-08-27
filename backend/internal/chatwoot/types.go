@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // MessageType normaliza o campo message_type do webhook, que pode chegar como
@@ -61,6 +62,42 @@ type Envelope struct {
 	Event string `json:"event"`
 }
 
+// FlexTime tolera os formatos de `created_at` que o Chatwoot emite conforme a
+// versão/canal: unix (int ou float), RFC3339 ou "2006-01-02 15:04:05 UTC".
+// Falha de parse vira zero-value (não derruba o unmarshal do evento).
+type FlexTime struct{ time.Time }
+
+func (t *FlexTime) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "null" {
+		return nil
+	}
+	if s[0] == '"' {
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
+			return nil
+		}
+		for _, layout := range []string{
+			time.RFC3339, "2006-01-02 15:04:05 MST", "2006-01-02 15:04:05 -0700",
+			"2006-01-02T15:04:05.000-07:00",
+		} {
+			if parsed, err := time.Parse(layout, str); err == nil {
+				t.Time = parsed
+				return nil
+			}
+		}
+		return nil
+	}
+	var n float64
+	if err := json.Unmarshal(b, &n); err != nil {
+		return nil
+	}
+	if n > 0 {
+		t.Time = time.Unix(int64(n), 0)
+	}
+	return nil
+}
+
 // MessageCreated representa o evento message_created.
 type MessageCreated struct {
 	Event        string       `json:"event"`
@@ -68,6 +105,8 @@ type MessageCreated struct {
 	Content      string       `json:"content"`
 	MessageType  MessageType  `json:"message_type"`
 	Private      bool         `json:"private"`
+	SourceID     string       `json:"source_id"` // id da mensagem na origem (WAID no WhatsApp)
+	CreatedAt    FlexTime     `json:"created_at"`
 	Sender       Sender       `json:"sender"`
 	Conversation Conversation `json:"conversation"`
 	Account      Account      `json:"account"`

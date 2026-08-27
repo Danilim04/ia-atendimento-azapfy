@@ -48,6 +48,13 @@ type Config struct {
 	ConfirmField  string        // dado pedido na confirmação: "email" (default) | "nome"
 	MaxTentativas int           // tentativas de login/confirmação antes de rotear p/ humano
 	IdentityTTL   time.Duration // validade do cache telefone→perfil (base própria)
+	GateFalhaTTL  time.Duration // após esse tempo, GateFalha expira e a identificação recomeça (F1)
+
+	// Robustez de transporte (laudo 2026-08-27).
+	DebounceJanela time.Duration // silêncio que fecha uma rajada de mensagens (coalescência, F11)
+	DebounceTeto   time.Duration // espera máxima acumulada antes de processar mesmo sem silêncio
+	EventoIdadeMax time.Duration // mensagens mais velhas que isso são descartadas (F10); 0 = sem corte
+	ReplyMaxChars  int           // tamanho-alvo de cada mensagem enviada ao WhatsApp (F12); 0 = sem quebra
 
 	// SAC (atendimento/chamados): tools de dados que o cérebro chama via toolsapi.
 	// Tudo opcional — sem SAC_BASE_URL a API de tools não é exposta.
@@ -93,6 +100,7 @@ func Load() (*Config, error) {
 		SACTimezone:       getenv("SAC_TIMEZONE", "America/Sao_Paulo"),
 		SACAPIToken:       getenv("SAC_API_TOKEN", ""),
 		ToolsAPIToken:     getenv("TOOLS_API_TOKEN", ""),
+		ReplyMaxChars:     getenvInt("REPLY_MAX_CHARS", 900),
 	}
 
 	var err error
@@ -107,6 +115,18 @@ func Load() (*Config, error) {
 	}
 	if cfg.SACConfigTTL, err = parseDuration(getenv("SAC_CONFIG_TTL", "10m")); err != nil {
 		return nil, fmt.Errorf("SAC_CONFIG_TTL inválido: %w", err)
+	}
+	if cfg.GateFalhaTTL, err = parseDuration(getenv("GATE_FALHA_TTL", "1h")); err != nil {
+		return nil, fmt.Errorf("GATE_FALHA_TTL inválido: %w", err)
+	}
+	if cfg.DebounceJanela, err = parseDuration(getenv("DEBOUNCE_JANELA", "8s")); err != nil {
+		return nil, fmt.Errorf("DEBOUNCE_JANELA inválido: %w", err)
+	}
+	if cfg.DebounceTeto, err = parseDuration(getenv("DEBOUNCE_TETO", "20s")); err != nil {
+		return nil, fmt.Errorf("DEBOUNCE_TETO inválido: %w", err)
+	}
+	if cfg.EventoIdadeMax, err = parseDuration(getenv("EVENTO_IDADE_MAX", "10m")); err != nil {
+		return nil, fmt.Errorf("EVENTO_IDADE_MAX inválido: %w", err)
 	}
 
 	var missing []string

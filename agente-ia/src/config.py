@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         "https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL"
     )
     openrouter_model: str = Field(
-        "google/gemini-2.5-flash", alias="OPENROUTER_MODEL"
+        "anthropic/claude-haiku-4.5", alias="OPENROUTER_MODEL"
     )
     openrouter_classifier_model: str = Field(
         "google/gemini-2.5-flash-lite", alias="OPENROUTER_CLASSIFIER_MODEL"
@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     )
 
     llm_temperature: float = Field(0.2, alias="LLM_TEMPERATURE")
+    # Timeout por chamada de LLM. Deve caber DENTRO do BRAIN_TIMEOUT do gateway
+    # Go (60s) mesmo num turno com 2-3 chamadas — senão o gateway desiste e o
+    # cliente vê erro genérico enquanto o cérebro ainda trabalha.
+    llm_timeout: float = Field(45.0, alias="LLM_TIMEOUT")
     rag_top_k: int = Field(3, alias="RAG_TOP_K")
     rag_chunk_size: int = Field(800, alias="RAG_CHUNK_SIZE")
     rag_chunk_overlap: int = Field(120, alias="RAG_CHUNK_OVERLAP")
@@ -49,6 +53,13 @@ class Settings(BaseSettings):
     sac_tools_base_url: str = Field("http://localhost:8080", alias="SAC_TOOLS_BASE_URL")
     sac_tools_token: str = Field("", alias="SAC_TOOLS_TOKEN")
     sac_tools_timeout: float = Field(30.0, alias="SAC_TOOLS_TIMEOUT")
+
+    # Checkpointer persistente do grafo (histórico das conversas por
+    # conversation_id). Sem o pacote `langgraph-checkpoint-sqlite` (ou em erro),
+    # o server cai para MemorySaver com warning — dev/testes seguem sem setup.
+    checkpoint_db_path: Path = Field(
+        Path("./data/checkpoints.db"), alias="CHECKPOINT_DB_PATH"
+    )
 
     # --- Observabilidade: Langfuse (tracing) — OPCIONAL ---
     # Sem as duas chaves, o tracing fica DESLIGADO e o agente roda normal

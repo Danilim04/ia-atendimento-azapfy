@@ -66,6 +66,11 @@ def _passa_seguranca(monkeypatch) -> None:
     )
 
 
+def _sem_rag(pergunta: str) -> dict:
+    """Retriever nulo p/ o nó `retrieve` — testes não tocam o Chroma real."""
+    return {"encontrado": False, "total": 0, "chunks": []}
+
+
 # ===========================================================================
 # entry_node — reseta estado por turno
 # ===========================================================================
@@ -85,6 +90,7 @@ def test_entry_node_reseta_seguranca_tentou_rag_e_fontes():
         "seguranca": None,
         "tentou_rag": False,
         "fontes_usadas": [],
+        "rag_contexto": None,
         "iteracoes_agente": 0,
     }
 
@@ -153,17 +159,31 @@ def test_input_guardrail_avalia_a_ULTIMA_humana(monkeypatch):
 # ===========================================================================
 
 
-def test_route_after_input_guardrail_safe_vai_pra_agent():
+def test_route_after_input_guardrail_safe_vai_pra_retrieve():
     assert (
-        nodes.route_after_input_guardrail({"seguranca": {"is_safe": True}})
-        == "agent"
+        nodes.route_after_input_guardrail(
+            {"seguranca": {"is_safe": True, "categoria": "suporte"}}
+        )
+        == "retrieve"
     )
 
 
-def test_route_after_input_guardrail_unsafe_vai_pra_safe_response():
+def test_route_after_input_guardrail_malicioso_vai_pra_safe_response():
     assert (
-        nodes.route_after_input_guardrail({"seguranca": {"is_safe": False}})
+        nodes.route_after_input_guardrail(
+            {"seguranca": {"is_safe": False, "categoria": "malicioso"}}
+        )
         == "safe_response"
+    )
+
+
+def test_route_after_input_guardrail_off_topic_NAO_bloqueia_mais():
+    """F8: off_topic vai ao agente (com dica no system prompt), não ao brush-off."""
+    assert (
+        nodes.route_after_input_guardrail(
+            {"seguranca": {"is_safe": False, "categoria": "off_topic"}}
+        )
+        == "retrieve"
     )
 
 
@@ -300,8 +320,9 @@ def test_tools_node_falha_de_tool_e_capturada():
         ]
     }
     out = tn(state)
-    assert "falha ao executar" in out["messages"][0].content
-    assert "boom interno" in out["messages"][0].content
+    # Erro GENÉRICO para o agente (A2): o detalhe técnico NÃO vaza.
+    assert "erro" in out["messages"][0].content
+    assert "boom interno" not in out["messages"][0].content
 
 
 def test_tools_node_no_op_quando_ultima_msg_nao_tem_tool_calls():
@@ -455,7 +476,7 @@ def test_aplicar_cache_control_marca_system_e_ultima_sem_mutar():
 
 def test_grafo_compila_sem_erro():
     fake = _fake_llm()
-    g = build_graph(llm=fake, tools=[])
+    g = build_graph(llm=fake, tools=[], buscar_chunks=_sem_rag)
     assert g is not None
 
 
@@ -463,7 +484,7 @@ def test_grafo_e2e_fluxo_simples_safe(monkeypatch):
     _passa_seguranca(monkeypatch)
     fake = _fake_llm(scripted=[AIMessage(content="oi! sou o agente azapfy")])
 
-    g = build_graph(llm=fake, tools=[])
+    g = build_graph(llm=fake, tools=[], buscar_chunks=_sem_rag)
     out = g.invoke(
         {"telefone": "11999990001", "messages": [HumanMessage(content="ola")]},
         config={"configurable": {"thread_id": "11999990001"}},
@@ -478,7 +499,7 @@ def test_grafo_e2e_fluxo_simples_safe(monkeypatch):
 def test_grafo_e2e_input_malicioso_bloqueia_sem_chamar_llm(monkeypatch):
     fake = _fake_llm()  # sem scripted — qualquer chamada faria pop de StopIteration
 
-    g = build_graph(llm=fake, tools=[])
+    g = build_graph(llm=fake, tools=[], buscar_chunks=_sem_rag)
     out = g.invoke(
         {
             "telefone": "11999990001",
@@ -507,7 +528,7 @@ def test_grafo_e2e_loop_agent_tools_agent(monkeypatch):
         ]
     )
 
-    g = build_graph(llm=fake, tools=[_tool_simples])
+    g = build_graph(llm=fake, tools=[_tool_simples], buscar_chunks=_sem_rag)
     out = g.invoke(
         {"telefone": "11999990001", "messages": [HumanMessage(content="execute")]},
         config={"configurable": {"thread_id": "11999990001"}},
@@ -528,7 +549,7 @@ def test_grafo_persiste_thread_via_memorysaver(monkeypatch):
         ]
     )
 
-    g = build_graph(llm=fake, tools=[])
+    g = build_graph(llm=fake, tools=[], buscar_chunks=_sem_rag)
     cfg = {"configurable": {"thread_id": "11999990001"}}
 
     g.invoke(
@@ -566,7 +587,9 @@ def test_grafo_e2e_acumula_fontes_quando_rag_e_chamado(monkeypatch):
         ]
     )
 
-    g = build_graph(llm=fake, tools=[consultar_base_conhecimento_fake])
+    g = build_graph(
+        llm=fake, tools=[consultar_base_conhecimento_fake], buscar_chunks=_sem_rag
+    )
     out = g.invoke(
         {
             "telefone": "11999990001",
@@ -577,3 +600,173 @@ def test_grafo_e2e_acumula_fontes_quando_rag_e_chamado(monkeypatch):
 
     assert out["tentou_rag"] is True
     assert out["fontes_usadas"] == ["azapfy-web.md — Módulo: Pesquisa"]
+
+
+# ===========================================================================
+# Retrieval-first — nó retrieve + contexto no system prompt
+# ===========================================================================
+
+
+def _rag_bling(pergunta: str) -> dict:
+    return {
+        "encontrado": True,
+        "total": 1,
+        "chunks": [
+            {
+                "texto": "Vá em Configurações > Integrações.",
+                "secao": "Integrações › Bling",
+                "source": "azapfy-web.md",
+            }
+        ],
+    }
+
+
+def test_retrieve_node_popula_contexto_e_fontes():
+    rn = nodes.make_retrieve_node(_rag_bling)
+    out = rn({"messages": [HumanMessage(content="como configuro o Bling?")]})
+    assert out["tentou_rag"] is True
+    assert out["fontes_usadas"] == ["azapfy-web.md — Integrações › Bling"]
+    assert "<documento_externo" in out["rag_contexto"]
+    assert 'origem="rag"' in out["rag_contexto"]
+
+
+def test_retrieve_node_vazio_segue_sem_contexto():
+    rn = nodes.make_retrieve_node(_sem_rag)
+    out = rn({"messages": [HumanMessage(content="qualquer coisa")]})
+    assert out["rag_contexto"] is None
+    assert out["tentou_rag"] is True
+
+
+def test_grafo_e2e_retrieval_first_injeta_contexto_no_system(monkeypatch):
+    """O contexto recuperado chega ao LLM via system prompt em UMA chamada."""
+    _passa_seguranca(monkeypatch)
+    fake = _fake_llm(scripted=[AIMessage(content="resposta fundamentada")])
+
+    g = build_graph(llm=fake, tools=[], buscar_chunks=_rag_bling)
+    out = g.invoke(
+        {
+            "telefone": "11999990001",
+            "messages": [HumanMessage(content="como configuro o Bling?")],
+        },
+        config={"configurable": {"thread_id": "t-rf"}},
+    )
+
+    # 1 única chamada de LLM (sem loop de tool p/ RAG)
+    fake.invoke.assert_called_once()
+    sp = _texto_de(fake.invoke.call_args.args[0][0].content)
+    assert "<documento_externo" in sp
+    assert "Integrações › Bling" in sp
+    assert out["fontes_usadas"] == ["azapfy-web.md — Integrações › Bling"]
+
+
+def test_agent_node_recebe_dica_de_off_topic_no_system():
+    fake = _fake_llm(scripted=[AIMessage(content="redireciono com simpatia")])
+    agent = nodes.make_agent_node(fake, [])
+    agent(
+        {
+            "messages": [HumanMessage(content="me conta uma piada")],
+            "seguranca": {
+                "is_safe": False,
+                "categoria": "off_topic",
+                "motivo": "x",
+            },
+        }
+    )
+    sp = _texto_de(fake.invoke.call_args.args[0][0].content)
+    assert "Aviso do classificador" in sp
+
+
+# ===========================================================================
+# Fluxo ativo — classificador pulado em continuação de conversa (F8)
+# ===========================================================================
+
+
+def test_fluxo_ativo_quando_agente_perguntou():
+    msgs = [
+        HumanMessage(content="abre um chamado"),
+        AIMessage(content="Vou registrar 'painel fora'. Posso abrir? "),
+        HumanMessage(content="Não, pode deixar"),
+    ]
+    assert nodes._fluxo_ativo(msgs) is True
+
+
+def test_fluxo_inativo_quando_resposta_nao_pergunta():
+    msgs = [
+        HumanMessage(content="oi"),
+        AIMessage(content="Olá! Sou o Zapin."),
+        HumanMessage(content="me conta uma piada"),
+    ]
+    assert nodes._fluxo_ativo(msgs) is False
+
+
+def test_fluxo_inativo_no_primeiro_turno():
+    assert nodes._fluxo_ativo([HumanMessage(content="boa noite")]) is False
+
+
+def test_input_guardrail_pula_classificador_em_fluxo_ativo(monkeypatch):
+    chamadas: list[str] = []
+
+    def _classificador_spy(texto, **kwargs):
+        chamadas.append(texto)
+        return {"is_safe": False, "categoria": "off_topic", "motivo": "spy"}
+
+    monkeypatch.setattr(
+        "src.security.input_guardrails._classificar_via_llm", _classificador_spy
+    )
+    out = nodes.input_guardrail_node(
+        {
+            "messages": [
+                HumanMessage(content="abre um chamado"),
+                AIMessage(content="Confirma a abertura?"),
+                HumanMessage(content="Não, pode deixar"),
+            ]
+        }
+    )
+    # O classificador LLM NÃO foi chamado; a continuação passou como suporte.
+    assert chamadas == []
+    assert out["seguranca"]["categoria"] == "suporte"
+
+
+# ===========================================================================
+# Output guardrail — citações verificadas (F4) + máscara de erro interno (A2)
+# ===========================================================================
+
+
+def test_output_guardrail_remove_citacao_fabricada():
+    ultima = AIMessage(
+        content=(
+            "O app permite comprovar em 3 cliques "
+            '(fonte: Azapfy, seção "App do Motorista (Mobile)").'
+        )
+    )
+    out = nodes.output_guardrail_node(
+        {"messages": [ultima], "fontes_usadas": []}
+    )
+    novo = out["messages"][0]
+    assert "fonte:" not in novo.content
+    assert "3 cliques" in novo.content
+    # Mesmo id → add_messages substitui em vez de duplicar.
+    assert novo.id == ultima.id
+
+
+def test_output_guardrail_mantem_citacao_real():
+    ultima = AIMessage(
+        content='Use a Pesquisa (fonte: azapfy-web.md, seção "Módulo: Pesquisa").'
+    )
+    out = nodes.output_guardrail_node(
+        {
+            "messages": [ultima],
+            "fontes_usadas": ["azapfy-web.md — Módulo: Pesquisa"],
+        }
+    )
+    assert out == {}  # nada a corrigir
+
+
+def test_output_guardrail_mascara_vazamento_interno():
+    from src.agent.prompts import RESPOSTA_ERRO_INTERNO
+
+    ultima = AIMessage(
+        content='Erro: Traceback (most recent call last) File "/app/src/x.py"'
+    )
+    out = nodes.output_guardrail_node({"messages": [ultima], "fontes_usadas": []})
+    assert out["messages"][0].content == RESPOSTA_ERRO_INTERNO

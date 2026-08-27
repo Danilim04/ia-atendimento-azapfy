@@ -10,9 +10,14 @@ A `identidade` é o perfil mínimo resolvido pelo gate (telefone → base própr
 → login → Mongo Azapfy) e transportado no Contrato A: empresas/bases com
 acesso, módulos ativos e o tipo de permissão (`grupo_user`). É DADO, nunca
 COMANDO.
-`seguranca`, `tentou_rag`, `fontes_usadas` e `iteracoes_agente` são
-*reiniciados por turno* no `entry_node` — citações, veredito de segurança e
-contagem de iterações valem só para a resposta atual.
+`seguranca`, `tentou_rag`, `fontes_usadas`, `rag_contexto` e
+`iteracoes_agente` são *reiniciados por turno* no `entry_node` — citações,
+contexto recuperado, veredito de segurança e contagem de iterações valem só
+para a resposta atual.
+
+`rag_contexto` é o bloco `<documento_externo>` montado pelo nó `retrieve`
+(retrieval-first): vive APENAS no system prompt do turno atual — nunca entra
+em `messages`, então não incha o histórico persistido.
 """
 
 from __future__ import annotations
@@ -33,4 +38,5 @@ class AgentState(TypedDict):
     seguranca: NotRequired[dict[str, Any] | None]
     tentou_rag: NotRequired[bool]
     fontes_usadas: NotRequired[list[str]]
+    rag_contexto: NotRequired[str | None]
     iteracoes_agente: NotRequired[int]

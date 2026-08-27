@@ -71,24 +71,26 @@ def test_verificar_chamados_cliente_com_multiplos_tickets():
 
 
 # ---------------------------------------------------------------------------
-# rastrear_nota_fiscal — variações no ciclo de entrega da mercadoria
+# rastrear_nota_fiscal — variações no ciclo de entrega da mercadoria.
+# O escopo (`grupos_emp_sessao`) é InjectedToolArg: em produção quem o
+# preenche é a política (`tool_policy`), nunca o LLM. Aqui invocamos direto.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "id_cliente,numero_nota,etapa,comprovacao",
+    "grupo_emp,numero_nota,etapa,comprovacao",
     [
-        ("CLI-1001", "NF-1042", "em_rota", "pendente"),
-        ("CLI-1001", "NF-1043", "entregue", "validada"),
-        ("CLI-1002", "NF-2001", "transbordo", "pendente"),
-        ("CLI-1003", "NF-3001", "entregue", "rejeitada"),
+        ("AZAPERS", "NF-1042", "em_rota", "pendente"),
+        ("AZAPERS", "NF-1043", "entregue", "validada"),
+        ("ALMEIDA LOG", "NF-2001", "transbordo", "pendente"),
+        ("PEREIRA CARGAS", "NF-3001", "entregue", "rejeitada"),
     ],
 )
 def test_rastrear_nota_fiscal_variacoes_no_ciclo(
-    id_cliente, numero_nota, etapa, comprovacao
+    grupo_emp, numero_nota, etapa, comprovacao
 ):
     resultado = rastrear_nota_fiscal.invoke(
-        {"id_cliente": id_cliente, "numero_nota": numero_nota}
+        {"numero_nota": numero_nota, "grupos_emp_sessao": [grupo_emp]}
     )
     assert resultado["encontrado"] is True
     assert resultado["etapa"] == etapa
@@ -98,7 +100,7 @@ def test_rastrear_nota_fiscal_variacoes_no_ciclo(
 
 def test_rastrear_nota_fiscal_normaliza_numero_minusculo_e_espacos():
     resultado = rastrear_nota_fiscal.invoke(
-        {"id_cliente": "CLI-1001", "numero_nota": "  nf-1042 "}
+        {"numero_nota": "  nf-1042 ", "grupos_emp_sessao": ["AZAPERS"]}
     )
     assert resultado["encontrado"] is True
     assert resultado["numero_nota"] == "NF-1042"
@@ -106,17 +108,34 @@ def test_rastrear_nota_fiscal_normaliza_numero_minusculo_e_espacos():
 
 def test_rastrear_nota_fiscal_numero_desconhecido_nao_encontrado():
     resultado = rastrear_nota_fiscal.invoke(
-        {"id_cliente": "CLI-1001", "numero_nota": "NF-0000"}
+        {"numero_nota": "NF-0000", "grupos_emp_sessao": ["AZAPERS"]}
     )
     assert resultado["encontrado"] is False
 
 
-def test_rastrear_nota_fiscal_nao_vaza_nf_de_outro_cliente():
-    # NF-2001 existe, mas pertence ao CLI-1002 (LLM06 — não vazar dado alheio).
+def test_rastrear_nota_fiscal_nao_vaza_nf_de_outro_grupo():
+    # NF-2001 existe, mas é da ALMEIDA LOG — sessão de outro grupo não a vê
+    # nem tem a existência confirmada (F7/LLM06).
     resultado = rastrear_nota_fiscal.invoke(
-        {"id_cliente": "CLI-1001", "numero_nota": "NF-2001"}
+        {"numero_nota": "NF-2001", "grupos_emp_sessao": ["AZAPERS"]}
     )
     assert resultado["encontrado"] is False
+
+
+def test_rastrear_nota_fiscal_sem_escopo_falha_fechada():
+    # Sessão sem grupos (não identificado/telefone desconhecido) → nada sai.
+    resultado = rastrear_nota_fiscal.invoke(
+        {"numero_nota": "NF-1042", "grupos_emp_sessao": []}
+    )
+    assert resultado["encontrado"] is False
+
+
+def test_rastrear_nota_fiscal_schema_do_llm_nao_expoe_escopo():
+    """O IDOR é irrepresentável: o schema visto pelo modelo só tem o número."""
+    schema = rastrear_nota_fiscal.tool_call_schema.model_json_schema()
+    assert "numero_nota" in schema["properties"]
+    assert "grupos_emp_sessao" not in schema["properties"]
+    assert "id_cliente" not in schema["properties"]
 
 
 # ---------------------------------------------------------------------------

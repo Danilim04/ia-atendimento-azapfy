@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from fastapi import FastAPI
@@ -31,6 +33,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from src.agent.graph import build_graph
+from src.config import get_settings
 from src.identity.login_extractor import extrair_login
 from src.observability.tracing import get_tracing_handler
 
@@ -115,13 +118,20 @@ async def processar_chat(graph: Any, req: ChatRequest) -> ChatResponse:
     (ver `nodes._build_system_message`).
     """
     login = (req.identidade or {}).get("login") if req.identidade else None
+    # PII mascarada nos logs (F5/LLM06/LGPD): telefone e login nunca em claro;
+    # o conteúdo da mensagem só aparece em DEBUG.
     logger.info(
-        "chat_request conversation_id=%s canal=%s telefone=%s login=%s identificado=%s mensagem=%r",
+        "chat_request conversation_id=%s canal=%s telefone=%s login=%s identificado=%s len_mensagem=%d",
         req.conversation_id,
         req.canal,
-        req.telefone,
-        login,
+        _mascarar(req.telefone or ""),
+        _mascarar(login or ""),
         bool(req.identidade and req.identidade.get("encontrado")),
+        len(req.mensagem or ""),
+    )
+    logger.debug(
+        "chat_request_mensagem conversation_id=%s mensagem=%r",
+        req.conversation_id,
         req.mensagem,
     )
 
@@ -174,13 +184,69 @@ _GRAPH: Any = None
 
 
 def _get_graph():
+    """Fallback lazy (testes chamam sem lifespan): grafo com MemorySaver."""
     global _GRAPH
     if _GRAPH is None:
         _GRAPH = build_graph()
     return _GRAPH
 
 
-app = FastAPI(title="Azapfy Suporte IA — cérebro")
+def _warmup_rag_em_background() -> None:
+    """Aquece embeddings + ChromaDB fora do caminho da 1ª mensagem (B1).
+
+    O primeiro load do sentence-transformers custa vários segundos; sem o
+    warm-up esse custo cai no primeiro cliente do dia. Fail-safe: erro só loga.
+    """
+
+    def _aquecer() -> None:
+        try:
+            from src.tools.rag_tool import buscar_chunks
+
+            buscar_chunks("warmup")
+            logger.info("rag_warmup_ok")
+        except Exception as exc:  # noqa: BLE001 — warm-up nunca derruba o server
+            logger.warning("rag_warmup_falhou erro=%s", exc)
+
+    threading.Thread(target=_aquecer, name="rag-warmup", daemon=True).start()
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Sobe o grafo com checkpointer SQLite persistente + warm-up do RAG.
+
+    Sem o pacote `langgraph-checkpoint-sqlite` (ou em erro de setup), cai para
+    o MemorySaver default com warning — dev/testes rodam sem nenhum setup, mas
+    em produção o histórico das conversas passa a sobreviver a restart.
+    """
+    global _GRAPH
+    saver_cm = None
+    saver = None
+    try:
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        caminho = get_settings().checkpoint_db_path
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        saver_cm = AsyncSqliteSaver.from_conn_string(str(caminho))
+        saver = await saver_cm.__aenter__()
+        logger.info("checkpointer_sqlite path=%s", caminho)
+    except Exception as exc:  # noqa: BLE001 — fail-soft para MemorySaver
+        saver_cm = None
+        saver = None
+        logger.warning(
+            "checkpointer_sqlite_indisponivel erro=%s — usando MemorySaver "
+            "(histórico NÃO sobrevive a restart)",
+            exc,
+        )
+    _GRAPH = build_graph(checkpointer=saver) if saver is not None else build_graph()
+    _warmup_rag_em_background()
+    try:
+        yield
+    finally:
+        if saver_cm is not None:
+            await saver_cm.__aexit__(None, None, None)
+
+
+app = FastAPI(title="Azapfy Suporte IA — cérebro", lifespan=_lifespan)
 
 
 @app.get("/health")
@@ -199,7 +265,11 @@ async def extract_login(req: ExtractLoginRequest) -> ExtractLoginResponse:
 
     O valor é só um candidato — quem autoriza é o gate (Mongo + confirmação).
     """
-    logger.info("extract_login_request mensagem=%r", req.mensagem)
+    # A mensagem contém o próprio identificador (PII) — em claro só em DEBUG.
+    logger.info("extract_login_request len_mensagem=%d", len(req.mensagem or ""))
+    logger.debug("extract_login_request_mensagem mensagem=%r", req.mensagem)
     resultado = extrair_login(req.mensagem)
-    logger.info("extract_login_response login=%r", resultado.get("login"))
+    logger.info(
+        "extract_login_response login=%s", _mascarar(resultado.get("login") or "")
+    )
     return ExtractLoginResponse(login=resultado.get("login"))

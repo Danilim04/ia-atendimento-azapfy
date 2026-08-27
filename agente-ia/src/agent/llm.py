@@ -44,6 +44,10 @@ def _build_chat_openrouter(
         model=model,
         temperature=temperature,
         default_headers=_openrouter_headers(settings),
+        # Timeout por chamada + 1 retry: uma chamada pendurada não pode estourar
+        # o BRAIN_TIMEOUT do gateway (60s) e virar erro genérico pro cliente.
+        timeout=settings.llm_timeout,
+        max_retries=1,
     )
 
 

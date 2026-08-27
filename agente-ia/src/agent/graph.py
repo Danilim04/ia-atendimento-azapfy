@@ -1,8 +1,16 @@
-"""Construção do StateGraph (Épico 7).
+"""Construção do StateGraph (Épico 7 + Bloco A).
 
-`build_graph()` aceita injeção opcional de `llm`, `tools` e `checkpointer`
-para facilitar testes — em produção o default é o LLM do OpenRouter
-(via `get_llm()`), todas as tools dos Épicos 2-4, e `MemorySaver`.
+`build_graph()` aceita injeção opcional de `llm`, `tools`, `checkpointer` e
+`buscar_chunks` para facilitar testes — em produção o default é o LLM do
+OpenRouter (via `get_llm()`), as tools canônicas, `MemorySaver` (o `server.py`
+injeta o checkpointer SQLite persistente) e o retriever real da base.
+
+Fluxo (retrieval-first + classificador rebaixado — ver `nodes.py`):
+
+    entry → input_guardrail → (malicioso) → safe_response → END
+                              (demais)   → retrieve → agent ⇄ tools
+                                                        ↓
+                                              output_guardrail → END
 
 Uso:
 
@@ -15,7 +23,7 @@ Uso:
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
@@ -26,6 +34,7 @@ from src.agent.nodes import (
     entry_node,
     input_guardrail_node,
     make_agent_node,
+    make_retrieve_node,
     make_tools_node,
     output_guardrail_node,
     route_after_agent,
@@ -34,25 +43,25 @@ from src.agent.nodes import (
 )
 from src.agent.state import AgentState
 from src.tools.crm_mocks import rastrear_nota_fiscal
-from src.tools.rag_tool import consultar_base_conhecimento
 from src.tools.sac_tools import SAC_TOOLS
 
 
 def get_default_tools() -> list[BaseTool]:
-    """Tools canônicas: RAG + rastreio de NF (mock) + chamados reais (SAC via Go).
+    """Tools canônicas: rastreio de NF (mock) + chamados reais (SAC via Go).
 
-    O agente não acessa a internet. A identidade do relator (nome/e-mail/grupo)
-    vem do gate via Contrato A, então não há `buscar_cliente_por_telefone` aqui;
-    abrir/listar chamados são as tools reais do SAC (`SAC_TOOLS`). O rastreio de
-    NF segue mockado (fase seguinte).
+    O agente não acessa a internet. A base de conhecimento NÃO é mais tool: o
+    retrieval é etapa fixa do grafo (nó `retrieve`) — o modelo não decide "se"
+    consulta. Identidade/escopo nunca são argumentos do LLM: são injetados e
+    validados pela política (`src/agent/tool_policy.py`).
     """
-    return [consultar_base_conhecimento, rastrear_nota_fiscal, *SAC_TOOLS]
+    return [rastrear_nota_fiscal, *SAC_TOOLS]
 
 
 def build_graph(
     llm: Optional[Any] = None,
     tools: Optional[list[BaseTool]] = None,
     checkpointer: Optional[Any] = None,
+    buscar_chunks: Optional[Callable[[str], dict]] = None,
 ):
     """Compila o grafo. Defaults de produção podem ser sobrescritos para testes."""
     if llm is None:
@@ -66,6 +75,7 @@ def build_graph(
 
     workflow.add_node("entry", entry_node)
     workflow.add_node("input_guardrail", input_guardrail_node)
+    workflow.add_node("retrieve", make_retrieve_node(buscar_chunks))
     workflow.add_node("agent", make_agent_node(llm, tools))
     workflow.add_node("tools", make_tools_node(tools))
     workflow.add_node("output_guardrail", output_guardrail_node)
@@ -76,8 +86,9 @@ def build_graph(
     workflow.add_conditional_edges(
         "input_guardrail",
         route_after_input_guardrail,
-        {"agent": "agent", "safe_response": "safe_response"},
+        {"retrieve": "retrieve", "safe_response": "safe_response"},
     )
+    workflow.add_edge("retrieve", "agent")
     workflow.add_conditional_edges(
         "agent",
         route_after_agent,

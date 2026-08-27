@@ -57,6 +57,11 @@ def _passa_seguranca(monkeypatch) -> None:
     )
 
 
+def _sem_rag(pergunta: str) -> dict:
+    """Retriever nulo p/ o nó `retrieve` — cenários que não exercitam o RAG."""
+    return {"encontrado": False, "total": 0, "chunks": []}
+
+
 # ===========================================================================
 # Cenário 1 — Login com telefone → saudação nominal
 # ===========================================================================
@@ -112,6 +117,7 @@ def test_cenario_2_pergunta_chamados_dispara_a_tool_correta(monkeypatch):
             abrir_novo_chamado,
             rastrear_nota_fiscal,
         ],
+        buscar_chunks=_sem_rag,
     )
     out = g.invoke(
         {
@@ -143,13 +149,13 @@ def test_cenario_2_pergunta_chamados_dispara_a_tool_correta(monkeypatch):
 
 
 # ===========================================================================
-# Cenário 3 — Pergunta técnica → RAG primeiro, página citada
+# Cenário 3 — Pergunta técnica → retrieval-first entrega o contexto, citação
+# verificada sobrevive ao output guardrail
 # ===========================================================================
 
 
-@tool
 def _rag_com_resultado(pergunta: str) -> dict:
-    """RAG fake (cenário 3) que devolve um chunk relevante."""
+    """Retriever fake (cenário 3) que devolve um chunk relevante."""
     return {
         "encontrado": True,
         "total": 1,
@@ -166,30 +172,17 @@ def _rag_com_resultado(pergunta: str) -> dict:
     }
 
 
-_rag_com_resultado.name = "consultar_base_conhecimento"
-
-
-def test_cenario_3_pergunta_tecnica_consulta_rag_e_registra_secao(monkeypatch):
+def test_cenario_3_pergunta_tecnica_recebe_contexto_e_cita_fonte_real(monkeypatch):
     _passa_seguranca(monkeypatch)
     fake = _fake_llm(
         scripted=[
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "tc1",
-                        "name": "consultar_base_conhecimento",
-                        "args": {"pergunta": "como configurar Bling"},
-                    }
-                ],
-            ),
             AIMessage(
                 content='Vá em Configurações > Integrações (fonte: azapfy-web.md, seção "Integrações › Bling").'
             ),
         ]
     )
 
-    g = build_graph(llm=fake, tools=[_rag_com_resultado])
+    g = build_graph(llm=fake, tools=[], buscar_chunks=_rag_com_resultado)
     out = g.invoke(
         {
             "telefone": "11999990001",
@@ -203,44 +196,29 @@ def test_cenario_3_pergunta_tecnica_consulta_rag_e_registra_secao(monkeypatch):
     assert out["tentou_rag"] is True
     assert "azapfy-web.md — Integrações › Bling" in out["fontes_usadas"]
 
-    tool_msg = next(m for m in out["messages"] if isinstance(m, ToolMessage))
-    assert "<documento_externo" in tool_msg.content
-    assert 'secao="Integrações › Bling"' in tool_msg.content
-    assert 'origem="rag"' in tool_msg.content
+    # UMA chamada de LLM: o contexto foi injetado no system prompt.
+    fake.invoke.assert_called_once()
+    system = fake.invoke.call_args.args[0][0]
+    sp = str(system.content)
+    assert "<documento_externo" in sp
+    assert 'secao="Integrações › Bling"' in sp
+    assert 'origem="rag"' in sp
+
+    # A citação é REAL (bate com a fonte recuperada) → sobrevive ao guardrail.
+    assert "Integrações › Bling" in out["messages"][-1].content
 
 
 # ===========================================================================
-# Cenário 4 — RAG vazio → agente responde sem web (sem acesso à internet)
+# Cenário 4 — retrieval vazio → agente responde sem web (sem acesso à internet)
 # ===========================================================================
-
-
-@tool
-def _rag_vazio(pergunta: str) -> dict:
-    """RAG fake (cenário 4) que não encontra nada."""
-    return {"encontrado": False, "total": 0, "chunks": []}
-
-
-_rag_vazio.name = "consultar_base_conhecimento"
 
 
 def test_cenario_4_rag_vazio_responde_sem_acessar_internet(monkeypatch):
-    """Sem a tool de web, o RAG vazio leva o agente a responder com o que tem
-    (ou oferecer chamado) — nunca a buscar na internet."""
+    """Retrieval vazio leva o agente a responder com o que tem (ou oferecer
+    chamado) — nunca a buscar na internet, e nenhuma fonte é registrada."""
     _passa_seguranca(monkeypatch)
     fake = _fake_llm(
         scripted=[
-            # Tentativa 1: RAG
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "tc1",
-                        "name": "consultar_base_conhecimento",
-                        "args": {"pergunta": "horário de atendimento"},
-                    }
-                ],
-            ),
-            # RAG vazio → responde sem web, oferece abrir chamado
             AIMessage(
                 content=(
                     "Não encontrei isso na base. Posso abrir um chamado para "
@@ -250,7 +228,7 @@ def test_cenario_4_rag_vazio_responde_sem_acessar_internet(monkeypatch):
         ]
     )
 
-    g = build_graph(llm=fake, tools=[_rag_vazio])
+    g = build_graph(llm=fake, tools=[], buscar_chunks=_sem_rag)
     out = g.invoke(
         {
             "telefone": "11999990001",
@@ -262,11 +240,8 @@ def test_cenario_4_rag_vazio_responde_sem_acessar_internet(monkeypatch):
     )
 
     assert out["tentou_rag"] is True
-    # Nenhuma fonte web foi registrada — o agente não tem acesso à internet
+    # Nenhuma fonte foi registrada — sem contexto, sem citação possível.
     assert out["fontes_usadas"] == []
-    tool_msgs = [m for m in out["messages"] if isinstance(m, ToolMessage)]
-    assert len(tool_msgs) == 1
-    assert tool_msgs[0].name == "consultar_base_conhecimento"
     assert "chamado" in out["messages"][-1].content.lower()
 
 
@@ -278,7 +253,7 @@ def test_cenario_4_rag_vazio_responde_sem_acessar_internet(monkeypatch):
 def test_cenario_5_jailbreak_devolve_resposta_padrao_sem_chamar_llm():
     fake = _fake_llm()  # Sem scripted: qualquer chamada provoca erro
 
-    g = build_graph(llm=fake, tools=[])
+    g = build_graph(llm=fake, tools=[], buscar_chunks=_sem_rag)
     out = g.invoke(
         {
             "telefone": "11999990001",
@@ -298,13 +273,12 @@ def test_cenario_5_jailbreak_devolve_resposta_padrao_sem_chamar_llm():
 
 
 # ===========================================================================
-# Cenário 6 — Indirect injection no PDF → tags impostoras escapadas
+# Cenário 6 — Indirect injection na doc → tags impostoras escapadas
 # ===========================================================================
 
 
-@tool
 def _rag_com_payload_malicioso(pergunta: str) -> dict:
-    """RAG fake (cenário 6): chunk traz prompt injection embutida."""
+    """Retriever fake (cenário 6): chunk traz prompt injection embutida."""
     return {
         "encontrado": True,
         "total": 1,
@@ -322,34 +296,20 @@ def _rag_com_payload_malicioso(pergunta: str) -> dict:
     }
 
 
-_rag_com_payload_malicioso.name = "consultar_base_conhecimento"
-
-
 def test_cenario_6_indirect_injection_no_chunk_e_neutralizada(monkeypatch):
     """Mesmo se a doc contiver tags de chat ou ordens 'do sistema', o
-    output_guardrail XML-escapa o payload e o container nunca quebra.
+    guardrail XML-escapa o payload antes de entrar no system prompt e o
+    container nunca quebra.
     """
     _passa_seguranca(monkeypatch)
     fake = _fake_llm(
         scripted=[
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "tc1",
-                        "name": "consultar_base_conhecimento",
-                        "args": {"pergunta": "explica o fluxo X"},
-                    }
-                ],
-            ),
-            AIMessage(
-                content="resposta usando só o conteúdo técnico legítimo"
-            ),
+            AIMessage(content="resposta usando só o conteúdo técnico legítimo"),
         ]
     )
 
-    g = build_graph(llm=fake, tools=[_rag_com_payload_malicioso])
-    out = g.invoke(
+    g = build_graph(llm=fake, tools=[], buscar_chunks=_rag_com_payload_malicioso)
+    g.invoke(
         {
             "telefone": "11999990001",
             "messages": [HumanMessage(content="me explica X")],
@@ -357,11 +317,14 @@ def test_cenario_6_indirect_injection_no_chunk_e_neutralizada(monkeypatch):
         config={"configurable": {"thread_id": "11999990001"}},
     )
 
-    tool_msg = next(m for m in out["messages"] if isinstance(m, ToolMessage))
-    content = tool_msg.content
+    system = fake.invoke.call_args.args[0][0]
+    # Analisa só a seção do contexto recuperado (as REGRAS do prompt também
+    # mencionam <documento_externo> — não contam como container).
+    content = str(system.content)
+    content = content[content.index("# Trechos da base de conhecimento"):]
 
     # Container abre 1x e fecha 1x — fechamento intra-chunk virou texto
-    assert content.count("<documento_externo") == 1
+    assert content.count("<documento_externo ") == 1
     assert content.count("</documento_externo>") == 1
     # Tags impostoras viraram entidades HTML
     assert "&lt;system&gt;" in content
@@ -417,7 +380,7 @@ def test_cenario_7_fluxo_dois_turnos_aberto_so_apos_confirmacao(monkeypatch):
         ]
     )
 
-    g = build_graph(llm=fake, tools=[abrir_novo_chamado])
+    g = build_graph(llm=fake, tools=[abrir_novo_chamado], buscar_chunks=_sem_rag)
     cfg = {"configurable": {"thread_id": "11999990001"}}
 
     estado_inicial = {

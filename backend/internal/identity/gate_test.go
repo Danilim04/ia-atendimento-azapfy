@@ -71,7 +71,7 @@ func newGateComExtractor(t *testing.T, repo UserRepo, extractor LoginExtractor) 
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return New(st, repo, "email", 3, time.Hour, extractor, nil), st
+	return New(st, repo, "email", 3, time.Hour, time.Hour, extractor, nil), st
 }
 
 func TestGateFluxoFeliz(t *testing.T) {
@@ -191,6 +191,84 @@ func TestGateExtractorIndisponivelNaoQuebra(t *testing.T) {
 	g.Process(ctx, conv, "5511999990004", "oi")
 	if r := g.Process(ctx, conv, "5511999990004", "meu login é joao"); r.Acao != AcaoPerguntar {
 		t.Fatalf("IA indisponível: esperava perguntar de novo, veio %q", r.Acao)
+	}
+}
+
+func TestGateFalhaExpiraEReinicia(t *testing.T) {
+	// F1: GateFalha não pode ser terminal. Com falhaTTL mínimo, a mensagem
+	// seguinte à falha já reinicia a identificação (pede login de novo).
+	st, err := store.NewSQLite(filepath.Join(t.TempDir(), "gate.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	repo := fakeRepo{docs: map[string]mongo.UsuarioDoc{}}
+	g := New(st, repo, "email", 3, time.Hour, time.Nanosecond, nil, nil)
+	ctx := context.Background()
+	const conv = int64(21)
+	const phone = "5511000000001"
+
+	g.Process(ctx, conv, phone, "oi")
+	g.Process(ctx, conv, phone, "x")
+	g.Process(ctx, conv, phone, "x")
+	if r := g.Process(ctx, conv, phone, "x"); r.Acao != AcaoRotearHumano {
+		t.Fatalf("3ª tentativa: esperava rotear humano, veio %q", r.Acao)
+	}
+	// TTL de 1ns já expirou → volta a perguntar o login em vez de ignorar.
+	if r := g.Process(ctx, conv, phone, "oi de novo"); r.Acao != AcaoPerguntar {
+		t.Fatalf("pós-falha expirada: esperava perguntar (reinício), veio %q", r.Acao)
+	}
+}
+
+func TestGateConfirmacaoToleraTextoAoRedor(t *testing.T) {
+	// F2: assinatura de relay ("**Claude:**") ou frase em volta do e-mail não
+	// podem queimar tentativa de cliente legítimo.
+	g, _ := newGate(t, fakeRepo{docs: map[string]mongo.UsuarioDoc{"10596693664": docDaniel()}})
+	ctx := context.Background()
+	const conv = int64(22)
+	const phone = "5511999990009"
+
+	g.Process(ctx, conv, phone, "oi")
+	g.Process(ctx, conv, phone, "10596693664")
+	r := g.Process(ctx, conv, phone, "**Claude:**\nmeu email é Daniel.Ferraz@azapfy.com.br, viu?")
+	if r.Acao != AcaoSaudar {
+		t.Fatalf("confirmação com texto ao redor: esperava saudar, veio %q", r.Acao)
+	}
+}
+
+func TestGateLoginCpfComPontuacaoErradaEmFrase(t *testing.T) {
+	// F2: "105.966.936.64" (pontuação trocada) e texto ao redor resolvem
+	// deterministicamente — sem custo/latência do extractor de IA.
+	chamado := false
+	repo := fakeRepo{docs: map[string]mongo.UsuarioDoc{"10596693664": docDaniel()}}
+	g, _ := newGateComExtractor(t, repo, fakeExtractor{chamado: &chamado})
+	ctx := context.Background()
+	const conv = int64(23)
+
+	g.Process(ctx, conv, "5511999990010", "oi")
+	if r := g.Process(ctx, conv, "5511999990010", "meu login é 105.966.936.64"); r.Acao != AcaoPerguntar {
+		t.Fatalf("CPF em frase: esperava perguntar (confirmação), veio %q", r.Acao)
+	}
+	if chamado {
+		t.Fatal("não deveria chamar a IA quando o CPF embutido já normaliza")
+	}
+}
+
+func TestGateLoginEmailEmFrase(t *testing.T) {
+	doc := docDaniel()
+	doc.Login = "daniel.ferraz@azapfy.com.br"
+	repo := fakeRepo{docs: map[string]mongo.UsuarioDoc{"daniel.ferraz@azapfy.com.br": doc}}
+	chamado := false
+	g, _ := newGateComExtractor(t, repo, fakeExtractor{chamado: &chamado})
+	ctx := context.Background()
+	const conv = int64(24)
+
+	g.Process(ctx, conv, "5511999990011", "oi")
+	if r := g.Process(ctx, conv, "5511999990011", "pode usar o email Daniel.Ferraz@Azapfy.com.br"); r.Acao != AcaoPerguntar {
+		t.Fatalf("e-mail em frase: esperava perguntar (confirmação), veio %q", r.Acao)
+	}
+	if chamado {
+		t.Fatal("não deveria chamar a IA quando o e-mail embutido já resolve")
 	}
 }
 

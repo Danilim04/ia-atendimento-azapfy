@@ -102,6 +102,24 @@ JAILBREAK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\bprompt\s+injection\b", re.IGNORECASE),
         "menciona prompt injection",
     ),
+    # Disclosure de internals sob pretexto (C2/A1 da Conversa 34): pedir a
+    # lista de ferramentas/regras internas nunca é uma pergunta de cliente.
+    (
+        re.compile(
+            r"\b(liste|listar|mostre|exiba|enumere|quais\s+s[ãa]o)\b[^.\n]{0,40}"
+            r"\b(suas|as\s+suas|tuas)\s+(ferramentas|tools|fun[çc][õo]es|regras|"
+            r"instru[çc][õo]es|diretrizes|capacidades)\b",
+            re.IGNORECASE,
+        ),
+        "pede a lista de ferramentas/regras internas",
+    ),
+    (
+        re.compile(
+            r"\bmodo\s+(auditoria|homologa[çc][ãa]o|manuten[çc][ãa]o|debug|teste\s+interno)\b",
+            re.IGNORECASE,
+        ),
+        "tenta ativar modo interno (auditoria/homologação/debug)",
+    ),
 ]
 
 
@@ -191,6 +209,7 @@ def avaliar_entrada(
     *,
     contexto: Optional[str] = None,
     classificador: Optional[Callable[..., dict]] = None,
+    pular_classificador: bool = False,
 ) -> dict:
     """Pipeline completo: heurística rápida → classificador LLM.
 
@@ -202,6 +221,11 @@ def avaliar_entrada(
             classificador é chamado exatamente como antes.
         classificador: injeção de dependência para testes — função
             `(texto, contexto=...) -> dict`. Default: `_classificar_via_llm`.
+        pular_classificador: True quando há FLUXO ATIVO na conversa (o agente
+            acabou de perguntar algo) — a mensagem é continuação por definição
+            e não passa pelo classificador LLM (F8: um "não, deixa pra lá" no
+            meio de um fluxo não pode virar off_topic). A heurística
+            determinística de jailbreak roda SEMPRE.
 
     Returns:
         `{is_safe, categoria, motivo}`.
@@ -220,6 +244,14 @@ def avaliar_entrada(
             bloqueio["motivo"],
         )
         return bloqueio
+
+    if pular_classificador:
+        logger.info("input_guardrail_fluxo_ativo — classificador LLM pulado")
+        return {
+            "is_safe": True,
+            "categoria": "suporte",
+            "motivo": "fluxo ativo — continuação de conversa",
+        }
 
     classificador = classificador or _classificar_via_llm
     # Só repassamos `contexto` quando há algo — mantém compatibilidade com

@@ -32,6 +32,10 @@ RUN OPENROUTER_API_KEY=dummy-build-ingest \
     python -m src.rag.ingest --docs-dir docs --persist-dir /app/chroma_db
 
 RUN useradd --uid 10001 --create-home app && chown -R app:app /app
+# /data recebe o checkpointer SQLite (volume brain-data no compose). Criar o
+# path JÁ com o owner certo faz o volume nomeado nascer gravável pelo user app
+# — sem isto o server cai no fallback MemorySaver (histórico não persiste).
+RUN mkdir -p /data && chown app:app /data
 USER app
 
 EXPOSE 8001

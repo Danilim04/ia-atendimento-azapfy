@@ -7,36 +7,51 @@ pelo LLM para escolher qual chamar — por isso elas descrevem com clareza
 As respostas são determinísticas em função do input (2–3 variações por tool),
 o que permite exercitar múltiplos caminhos do agente sem depender de dados
 reais ou aleatoriedade.
+
+Segurança (F7/IDOR — laudo 2026-08-27): NENHUMA tool exposta ao agente aceita
+argumento de identidade/escopo vindo do LLM. O escopo de `rastrear_nota_fiscal`
+(`grupos_emp_sessao`) é um `InjectedToolArg` preenchido pelo `tools_node` a
+partir da identidade resolvida pelo gate (ver `src/agent/tool_policy.py`) —
+não existe sequência de tokens que consulte NF de outro cliente.
+
+`buscar_cliente_por_telefone`, `verificar_chamados_abertos` e
+`abrir_novo_chamado` são LEGADO (Épicos 2-4): não entram em
+`get_default_tools()` — chamados reais são as SAC tools via gateway Go.
 """
 
 from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Annotated, Any, Optional
 
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolArg, tool
 
 
 # ---------------------------------------------------------------------------
 # "Banco de dados" mockado
 # ---------------------------------------------------------------------------
 
+# `grupo_emp` espelha o `grupo_empresa` da identidade real (Contrato A). O
+# telefone 11999990001 usa AZAPERS para casar com `identidade_mock` (harness).
 _CLIENTES: dict[str, dict[str, Any]] = {
     "11999990001": {
         "id_cliente": "CLI-1001",
+        "grupo_emp": "AZAPERS",
         "nome": "Mariana Souza",
         "plano": "Pro",
         "status_conta": "ativo",
     },
     "11999990002": {
         "id_cliente": "CLI-1002",
+        "grupo_emp": "ALMEIDA LOG",
         "nome": "Ricardo Almeida",
         "plano": "Business",
         "status_conta": "inadimplente",
     },
     "11999990003": {
         "id_cliente": "CLI-1003",
+        "grupo_emp": "PEREIRA CARGAS",
         "nome": "Júlia Pereira",
         "plano": "Starter",
         "status_conta": "ativo",
@@ -78,34 +93,35 @@ _CHAMADOS: dict[str, list[dict[str, Any]]] = {
 # Notas fiscais da MERCADORIA transportada (não é cobrança/assinatura). Cada NF
 # tem uma posição no ciclo de entrega da Azapfy (expedição → rota → transbordo →
 # entrega) e o status da comprovação de entrega. Indexadas pelo número da NF;
-# `id_cliente` permite não vazar NF de outro cliente (LLM06).
+# `grupo_emp` é o dono da NF — a checagem de posse compara com o escopo
+# INJETADO da sessão, nunca com valor vindo do LLM (F7/LLM06).
 _NOTAS_FISCAIS: dict[str, dict[str, Any]] = {
-    # Mariana (CLI-1001): uma a caminho, uma já entregue e validada.
+    # AZAPERS: uma a caminho, uma já entregue e validada.
     "NF-1042": {
-        "id_cliente": "CLI-1001",
+        "grupo_emp": "AZAPERS",
         "etapa": "em_rota",
         "comprovacao": "pendente",
         "ocorrencia": None,
         "atualizado_em": "2026-06-15T09:12:00Z",
     },
     "NF-1043": {
-        "id_cliente": "CLI-1001",
+        "grupo_emp": "AZAPERS",
         "etapa": "entregue",
         "comprovacao": "validada",
         "ocorrencia": None,
         "atualizado_em": "2026-06-12T17:40:00Z",
     },
-    # Ricardo (CLI-1002): parada em transbordo por divergência de endereço.
+    # ALMEIDA LOG: parada em transbordo por divergência de endereço.
     "NF-2001": {
-        "id_cliente": "CLI-1002",
+        "grupo_emp": "ALMEIDA LOG",
         "etapa": "transbordo",
         "comprovacao": "pendente",
         "ocorrencia": "endereco_divergente",
         "atualizado_em": "2026-06-14T11:05:00Z",
     },
-    # Júlia (CLI-1003): entregue, mas a comprovação foi rejeitada na auditoria.
+    # PEREIRA CARGAS: entregue, mas a comprovação foi rejeitada na auditoria.
     "NF-3001": {
-        "id_cliente": "CLI-1003",
+        "grupo_emp": "PEREIRA CARGAS",
         "etapa": "entregue",
         "comprovacao": "rejeitada",
         "ocorrencia": "foto_ilegivel",
@@ -125,6 +141,20 @@ def _mascarar_telefone(telefone: str) -> str:
     if len(digitos) <= 4:
         return "*" * len(digitos)
     return "*" * (len(digitos) - 4) + digitos[-4:]
+
+
+def grupos_emp_por_telefone(telefone: str) -> list[str]:
+    """Resolve o escopo mock (grupos de empresa) a partir do telefone da sessão.
+
+    Fallback usado pela política de tools quando a sessão não trouxe identidade
+    completa do gate (harness Chainlit/testes). Telefone desconhecido → escopo
+    vazio → toda consulta escopada falha fechada (nada é vazado).
+    """
+    cliente = _CLIENTES.get(_normalizar_telefone(telefone))
+    if cliente is None:
+        return []
+    grupo = cliente.get("grupo_emp")
+    return [grupo] if grupo else []
 
 
 # ---------------------------------------------------------------------------
@@ -184,20 +214,24 @@ def verificar_chamados_abertos(id_cliente: str) -> dict[str, Any]:
 
 
 @tool
-def rastrear_nota_fiscal(id_cliente: str, numero_nota: str) -> dict[str, Any]:
+def rastrear_nota_fiscal(
+    numero_nota: str,
+    grupos_emp_sessao: Annotated[Optional[list[str]], InjectedToolArg] = None,
+) -> dict[str, Any]:
     """Rastreia uma nota fiscal (NF da mercadoria) no ciclo de entrega da Azapfy.
 
     Use quando o cliente quiser saber EM QUE PONTO está uma NF específica da qual
     ele já tem o número: etapa do transporte (expedição → rota → transbordo →
     entrega), se a comprovação de entrega foi validada/rejeitada e se há ocorrência.
+    A busca é sempre restrita às empresas do cliente desta sessão — não é
+    possível (nem necessário) informar cliente ou empresa.
 
     NÃO use para dúvidas do tipo "como/onde encontro a NF no painel", "a nota não
-    aparece na Pesquisa" ou "como funciona o módulo X" — isso é how-to e vai para
-    `consultar_base_conhecimento`. Esta tool também não trata cobrança/fatura da
+    aparece na Pesquisa" ou "como funciona o módulo X" — isso é how-to e a base de
+    conhecimento já responde. Esta tool também não trata cobrança/fatura da
     assinatura Azapfy (a Azapfy não vende isso ao cliente final aqui).
 
     Args:
-        id_cliente: Identificador interno do cliente (ex.: "CLI-1001").
         numero_nota: Número da nota fiscal, ex.: "NF-1042".
 
     Returns:
@@ -207,17 +241,17 @@ def rastrear_nota_fiscal(id_cliente: str, numero_nota: str) -> dict[str, Any]:
     """
     numero = (numero_nota or "").strip().upper()
     registro = _NOTAS_FISCAIS.get(numero)
-    # Só devolve a NF se ela pertencer ao cliente da sessão — não vaza NF de
-    # outro cliente nem confirma a existência de números alheios (LLM06).
-    if registro is None or registro["id_cliente"] != id_cliente:
+    # Posse validada contra o escopo INJETADO da sessão (nunca argumento do
+    # LLM): NF de outra empresa não é devolvida nem tem a existência confirmada
+    # (F7/LLM06). Sem escopo na sessão → falha fechada.
+    grupos = {g.strip().upper() for g in (grupos_emp_sessao or []) if g}
+    if registro is None or registro["grupo_emp"].upper() not in grupos:
         return {
-            "id_cliente": id_cliente,
             "numero_nota": numero or numero_nota,
             "encontrado": False,
         }
 
     return {
-        "id_cliente": id_cliente,
         "numero_nota": numero,
         "etapa": registro["etapa"],
         "comprovacao": registro["comprovacao"],

@@ -65,8 +65,10 @@ func main() {
 	cw := chatwoot.NewClient(cfg.ChatwootBaseURL, cfg.ChatwootAccountID, cfg.ChatwootAPIToken)
 	brainClient := brain.NewClient(cfg.BrainBaseURL, cfg.BrainTimeout)
 	// brainClient também extrai o login de frases livres (fallback do gate).
-	gate := identity.New(st, repo, cfg.ConfirmField, cfg.MaxTentativas, cfg.IdentityTTL, brainClient, log)
-	eng := engine.New(cfg, cw, gate, brainClient, log)
+	gate := identity.New(st, repo, cfg.ConfirmField, cfg.MaxTentativas, cfg.IdentityTTL, cfg.GateFalhaTTL, brainClient, log)
+	eng := engine.New(cfg, cw, gate, brainClient, st, log)
+	// Contexto-raiz dos workers de conversa (coalescência/fila por conversa).
+	eng.Start(ctx)
 
 	if cfg.WebhookSecret == "" && cfg.WebhookToken == "" {
 		log.Warn("webhook SEM autenticação: defina WEBHOOK_TOKEN (?token=...) ou WEBHOOK_SECRET")

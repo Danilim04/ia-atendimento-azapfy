@@ -32,6 +32,8 @@ ENV/
 
 # Project-specific
 chroma_db/
+# checkpointer SQLite do brain (histórico de conversa local/dev)
+agente-ia/data/
 .chainlit/
 .files/
 chainlit.md

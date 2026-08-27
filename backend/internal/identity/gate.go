@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -64,15 +65,16 @@ type gateData struct {
 // Trocar aqui muda o nome em todas as mensagens.
 const nomeAssistente = "Zapin"
 
-// Mensagens do gate — tom acolhedor e mineiro, mas sempre claras sobre o passo.
+// Mensagens do gate — tom acolhedor em PT-BR neutro (decisão pós-Conversa 34:
+// sotaque removido; manter alinhado com a persona em agente-ia/src/agent/prompts.py).
 const (
-	msgPedirLogin            = "Uai, oi sô! 😄 Eu sô o " + nomeAssistente + ", atendente virtual da Azapfy, e vô cuidar de ocê hoje. Pra eu te atender direitinho, cê me passa o seu login no sistema?"
-	msgLoginNaoEncontrado    = "Ô sô, num achei esse login aqui não. Dá uma conferidinha e me manda de novo, ó? 🙏"
-	msgFalhaLogin            = "Pó, num consegui achar seu login de jeito nenhum. Mas fica sussa que eu já vô te passar pra um atendente da equipe, tá bão? 🤝"
-	msgSemAcesso             = "Ó, parece que seu acesso tá inativo no sistema, viu sô. Vô te encaminhar pra um atendente resolver isso contigo num instantinho. 🤝"
-	msgErroTemporario        = "Vixe, deu um trem aqui no sistema agora e num consegui consultar. Me dá um tempim e tenta de novo, ó? 🙏"
-	msgConfirmacaoNaoConfere = "Hmm, esse dado num bateu com o que tenho no cadastro não, uai. Cê pode me mandar de novo, sô?"
-	msgFalhaConfirmacao      = "Num consegui confirmar quem é ocê, mas relaxa! Vô te transferir pra um atendente nosso pra cuidar de ocê melhor, tá? 🤝"
+	msgPedirLogin            = "Olá! Eu sou o " + nomeAssistente + ", atendente virtual da Azapfy. 😊 Para eu te atender direitinho, me informa o seu login no sistema, por favor?"
+	msgLoginNaoEncontrado    = "Hmm, não encontrei esse login aqui. Pode conferir o dado e me enviar de novo? 🙏"
+	msgFalhaLogin            = "Não consegui localizar o seu login. Vou te encaminhar para um atendente da equipe continuar o atendimento, tudo bem? 🤝"
+	msgSemAcesso             = "Parece que o seu acesso está inativo no sistema. Vou te encaminhar para um atendente resolver isso com você. 🤝"
+	msgErroTemporario        = "Tive um problema no sistema e não consegui consultar agora. Pode tentar de novo em instantes, por favor? 🙏"
+	msgConfirmacaoNaoConfere = "Esse dado não bateu com o que tenho no cadastro. Pode conferir e me enviar de novo?"
+	msgFalhaConfirmacao      = "Não consegui confirmar a sua identidade, mas fica tranquilo: vou te transferir para um atendente da equipe. 🤝"
 )
 
 // Gate resolve a identidade por conversa.
@@ -83,12 +85,15 @@ type Gate struct {
 	confirmField  string         // "email" (default) | "nome"
 	maxTentativas int
 	ttl           time.Duration
+	falhaTTL      time.Duration // expiração do estado GateFalha (F1); <=0 → 1h
 	log           *slog.Logger
 }
 
 // New constrói o gate. `extractor` é opcional (nil = sem fallback de IA: só a
-// normalização determinística resolve o login).
-func New(st store.Store, repo UserRepo, confirmField string, maxTentativas int, ttl time.Duration, extractor LoginExtractor, log *slog.Logger) *Gate {
+// normalização determinística resolve o login). `falhaTTL` evita o estado
+// terminal do F1: passado esse tempo, a conversa em GateFalha volta a ser
+// atendida (a identificação recomeça).
+func New(st store.Store, repo UserRepo, confirmField string, maxTentativas int, ttl, falhaTTL time.Duration, extractor LoginExtractor, log *slog.Logger) *Gate {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -98,7 +103,10 @@ func New(st store.Store, repo UserRepo, confirmField string, maxTentativas int, 
 	if confirmField != "nome" {
 		confirmField = "email"
 	}
-	return &Gate{store: st, repo: repo, extractor: extractor, confirmField: confirmField, maxTentativas: maxTentativas, ttl: ttl, log: log}
+	if falhaTTL <= 0 {
+		falhaTTL = time.Hour
+	}
+	return &Gate{store: st, repo: repo, extractor: extractor, confirmField: confirmField, maxTentativas: maxTentativas, ttl: ttl, falhaTTL: falhaTTL, log: log}
 }
 
 // Process avança a máquina de estados do gate para uma mensagem do usuário.
@@ -121,6 +129,17 @@ func (g *Gate) Process(ctx context.Context, convID int64, phone, mensagem string
 		}
 		return g.iniciar(ctx, convID, phone)
 	case store.GateFalha:
+		// F1: GateFalha não é mais terminal — expirado o TTL, o cliente volta
+		// a ser atendido (cache primeiro; senão, recomeça a identificação).
+		if gs != nil && time.Since(gs.UpdatedAt) >= g.falhaTTL {
+			g.log.Info("gate falha expirado; reiniciando identificação",
+				"conversation_id", convID, "desde", gs.UpdatedAt)
+			if p := g.cacheHit(ctx, phone); p != nil {
+				g.salvarGate(ctx, convID, store.GateIdentificado, gateData{Perfil: p})
+				return Resultado{Acao: AcaoEncaminhar, Perfil: p}
+			}
+			return g.iniciar(ctx, convID, phone)
+		}
 		return Resultado{Acao: AcaoIgnorar}
 	case store.GateAguardLogin:
 		return g.tratarLogin(ctx, convID, phone, mensagem, gd)
@@ -206,7 +225,7 @@ func (g *Gate) tratarLogin(ctx context.Context, convID int64, phone, mensagem st
 }
 
 func (g *Gate) tratarConfirmacao(ctx context.Context, convID int64, phone, mensagem string, gd gateData) Resultado {
-	if got := normalizar(mensagem); got != "" && got == gd.ConfirmValue {
+	if confereConfirmacao(mensagem, gd.ConfirmValue) {
 		return g.identificar(ctx, convID, phone, gd.Perfil)
 	}
 	gd.Tentativas++
@@ -239,9 +258,9 @@ func (g *Gate) identificar(ctx context.Context, convID int64, phone string, perf
 // alvoConfirmacao devolve o valor esperado e a pergunta, conforme ConfirmField.
 func (g *Gate) alvoConfirmacao(doc mongo.UsuarioDoc) (valor, pergunta string) {
 	if g.confirmField == "nome" {
-		return doc.Nome, "Ó, pra eu ter certeza que é ocê mesmo, me fala seu nome completo do cadastro, sô?"
+		return doc.Nome, "Para confirmar que é você mesmo, me diz o seu nome completo do cadastro, por favor?"
 	}
-	return doc.Email, "Só pra confirmar que é ocê mesmo, qual é o e-mail que cê cadastrou na conta?"
+	return doc.Email, "Só para confirmar que é você: qual é o e-mail cadastrado na sua conta?"
 }
 
 func (g *Gate) salvarGate(ctx context.Context, convID int64, state string, gd gateData) {
@@ -304,11 +323,19 @@ func (g *Gate) tentarCandidatos(ctx context.Context, texto string) (mongo.Usuari
 	return mongo.UsuarioDoc{}, "", false, nil
 }
 
+// reEmailEmTexto acha um e-mail embutido numa frase ("meu email é joao@x.com").
+var reEmailEmTexto = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+
+// reDocEmTexto acha sequências de dígitos com separadores (CPF/CNPJ) dentro
+// de uma frase; o filtro de 11/14 dígitos vem depois.
+var reDocEmTexto = regexp.MustCompile(`\d[\d./\- ]{8,20}\d`)
+
 // loginCandidatos deriva, de um texto, as formas de login a tentar no Mongo:
-// o texto cru (trim), sua versão minúscula e — só quando é um CPF/CNPJ
-// formatado PURO — os dígitos. A versão só-dígitos é restrita a CPF/CNPJ puro
-// de propósito: extrair dígitos de uma frase ("tenho 2 contas, login joao")
-// casaria um usuário errado; frases ficam para o extractor (IA).
+// o texto cru (trim), sua versão minúscula, um CPF/CNPJ formatado puro, um
+// e-mail embutido na frase e sequências de EXATAMENTE 11/14 dígitos embutidas
+// (F2: "**Fulano:**\n105.966.936.64" resolve sem cair na IA). Não há risco em
+// tentar candidatos a mais: o lookup no Mongo é a validação real, e dígitos
+// soltos de frases não formam 11/14 dígitos por acaso.
 func loginCandidatos(texto string) []string {
 	texto = strings.TrimSpace(texto)
 	if texto == "" {
@@ -327,6 +354,15 @@ func loginCandidatos(texto string) []string {
 	add(strings.ToLower(texto))
 	if d := cpfCnpjDigitos(texto); d != "" {
 		add(d)
+	}
+	if m := reEmailEmTexto.FindString(texto); m != "" {
+		add(strings.ToLower(m))
+		add(m)
+	}
+	for _, m := range reDocEmTexto.FindAllString(texto, -1) {
+		if d := soDigitos(m); len(d) == 11 || len(d) == 14 {
+			add(d)
+		}
 	}
 	return out
 }
@@ -359,13 +395,48 @@ func normalizar(s string) string {
 	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(s))), " ")
 }
 
+// confereConfirmacao decide se a mensagem confirma o dado esperado (F2).
+// Igualdade exata quebrava com qualquer texto ao redor ("meu email é X",
+// assinatura de relay) e queimava tentativas de cliente legítimo. Regras:
+//   - igualdade normalizada; OU
+//   - dado esperado (≥5 chars) CONTIDO na mensagem normalizada; OU
+//   - para dado numérico (CPF/CNPJ, ≥8 dígitos), os dígitos esperados contidos
+//     nos dígitos da mensagem (tolera pontuação trocada: "105.966.936.64").
+func confereConfirmacao(mensagem, esperado string) bool {
+	got := normalizar(mensagem)
+	if got == "" || esperado == "" {
+		return false
+	}
+	if got == esperado {
+		return true
+	}
+	if len([]rune(esperado)) >= 5 && strings.Contains(got, esperado) {
+		return true
+	}
+	if de := soDigitos(esperado); len(de) >= 8 && strings.Contains(soDigitos(got), de) {
+		return true
+	}
+	return false
+}
+
+// soDigitos devolve apenas os dígitos de s.
+func soDigitos(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteByte(byte(r))
+		}
+	}
+	return b.String()
+}
+
 func saudacao(p *mongo.Perfil) string {
 	if p != nil && p.Nome != "" {
-		return "Que bão te ver por aqui, " + primeiroNome(p.Nome) + "! 😄 Aqui é o " +
-			nomeAssistente + ", atendente virtual da Azapfy. Em que que eu posso te ajudar hoje, sô?"
+		return "Que bom te ver por aqui, " + primeiroNome(p.Nome) + "! 😊 Eu sou o " +
+			nomeAssistente + ", atendente virtual da Azapfy. Como posso te ajudar hoje?"
 	}
-	return "Que bão te ver por aqui! 😄 Aqui é o " + nomeAssistente +
-		", atendente virtual da Azapfy. Em que que eu posso te ajudar hoje, sô?"
+	return "Que bom te ver por aqui! 😊 Eu sou o " + nomeAssistente +
+		", atendente virtual da Azapfy. Como posso te ajudar hoje?"
 }
 
 // primeiroNome devolve só o primeiro nome — mais caloroso que o nome completo.

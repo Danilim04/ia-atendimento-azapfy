@@ -24,8 +24,13 @@ services:
     environment:
       CHROMA_PERSIST_DIR: /app/chroma_db
       DOCS_DIR: /app/docs
+      # Histórico de conversa persistente (checkpointer SQLite do LangGraph) —
+      # sem o volume, um restart do brain apagaria a memória das conversas.
+      CHECKPOINT_DB_PATH: /data/checkpoints.db
       # Tools de chamado (SAC) que o cérebro chama no gateway.
       SAC_TOOLS_BASE_URL: http://gateway:8080
+    volumes:
+      - brain-data:/data
     ports:
       - '127.0.0.1:8001:8001'
     healthcheck:
@@ -59,3 +64,4 @@ services:
 
 volumes:
   gateway-data:
+  brain-data:

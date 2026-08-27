@@ -70,80 +70,118 @@ rede/Mongo.
 ## Arquitetura (visão geral)
 
 Fluxo de uma requisição: `app.py` (Chainlit) compila **um** grafo por processo
-e isola conversas pelo `thread_id` = telefone do cliente (via `MemorySaver`).
-Cada mensagem roda o `StateGraph` definido em `src/agent/graph.py`:
+e isola conversas pelo `thread_id` = telefone do cliente. O `server.py` injeta
+um **checkpointer SQLite** (`CHECKPOINT_DB_PATH`; fallback `MemorySaver` sem o
+pacote). Cada mensagem roda o `StateGraph` definido em `src/agent/graph.py`
+(**Bloco A** — retrieval-first + classificador rebaixado):
 
 ```
-entry → input_guardrail → (safe?) → agent ⇄ tools → output_guardrail → END
-                          (unsafe) → safe_response → END
+entry → input_guardrail → (malicioso) → safe_response → END
+                          (demais)   → retrieve → agent ⇄ tools
+                                                    ↓
+                                          output_guardrail → END
 ```
+
+Princípio de segurança do Bloco A: **o LLM nunca faz parte da base confiável**.
+Tool calls do modelo são input não-confiável — identidade/escopo são injetados
+do estado e validados pela política (`tool_policy.py`); trabalho determinístico
+(autorização, citação, formatação, dedup) nunca é delegado ao modelo.
 
 - **`src/agent/`** — o agente:
   - `state.py`: `AgentState` (TypedDict). `messages` usa o reducer
-    `add_messages` (acrescenta). `telefone`/`cliente` persistem entre turnos;
-    `seguranca`/`tentou_rag`/`fontes_usadas`/`iteracoes_agente` são resetados
-    por turno em `entry_node`.
+    `add_messages` (acrescenta; mesmo `id` substitui). `telefone`/`identidade`
+    persistem entre turnos; `seguranca`/`tentou_rag`/`fontes_usadas`/
+    `rag_contexto`/`iteracoes_agente` são resetados por turno em `entry_node`.
   - `nodes.py`: nós como **fábricas com injeção de dependência**
-    (`make_agent_node(llm, tools)`, `make_tools_node(tools)`) — facilita testar
-    sem rede. `agent_node` chama o LLM com `[system] + histórico`; `tools_node`
-    executa as tools e embrulha resultados do RAG em `<documento_externo>`.
+    (`make_agent_node(llm, tools)`, `make_retrieve_node(buscar_chunks)`,
+    `make_tools_node(tools)`) — facilita testar sem rede. `retrieve` roda o RAG
+    para TODA mensagem e injeta os chunks (em `<documento_externo>`) no system
+    prompt — o modelo não decide "se" consulta a base (mata a citação fabricada
+    F4 e corta uma chamada de LLM). `output_guardrail_node` valida citações
+    contra `fontes_usadas` e mascara vazamento de erro interno (A2).
+  - `tool_policy.py`: **política declarativa de autorização** (F7/F9) — para
+    cada tool, quais args são INJETADOS da sessão (`InjectedToolArg`, fora do
+    schema do modelo) e quais args do LLM são VALIDADOS contra a sessão.
+    Fonte única de verdade sobre o que o agente pode fazer; auditoria começa
+    e termina nesse arquivo.
   - `llm.py`: fábricas `get_llm()` (agente, tool-calling), `get_classifier_llm()`
     (classificador) e `get_embeddings()` (local). Tudo via `ChatOpenAI`
-    apontando para o OpenRouter; clientes `@lru_cache`-ados.
+    apontando para o OpenRouter; clientes `@lru_cache`-ados; timeout por chamada
+    (`LLM_TIMEOUT`, default 45s < BRAIN_TIMEOUT do gateway).
   - `prompts.py`: `SYSTEM_PROMPT_AGENTE` (blindado, com a **persona Zapin** —
     ver abaixo), `SYSTEM_PROMPT_CLASSIFICADOR`, `SYSTEM_PROMPT_EXTRATOR_LOGIN`
-    (extrator de login) e `RESPOSTA_OFF_TOPIC`.
+    (extrator de login), `RESPOSTA_OFF_TOPIC` e `RESPOSTA_ERRO_INTERNO`.
 - **`src/identity/`** — `login_extractor.py`: `extrair_login(mensagem)` usa o LLM
   barato (mesmo do classificador) com saída estruturada (`LoginExtraido`) para
   achar o identificador embutido numa frase livre. É o **fallback do gate Go**,
   exposto via `POST /extract-login`. **Fail-soft** (erro → `login=None`) e o valor
   é só um CANDIDATO — quem autoriza é o gate (Mongo + confirmação). Aceita injeção
   de dependência (`extrator=`) para testar sem rede.
-- **`src/tools/`** — `crm_mocks.py` (4 tools de CRM, dados em dicts no módulo),
-  `rag_tool.py` (`consultar_base_conhecimento`) e `identidade_mock.py`.
-  `get_default_tools()` em `graph.py` é a lista canônica. **Não há tool de busca
-  web** — o agente não acessa a internet.
+- **`src/tools/`** — `crm_mocks.py` (`rastrear_nota_fiscal` com escopo
+  `grupos_emp_sessao` **injetado** — o LLM só vê `numero_nota`; os demais mocks
+  de CRM são legado, fora da lista canônica), `sac_tools.py` (chamados reais
+  via gateway Go; `telefone` injetado), `rag_tool.py` (`buscar_chunks()` para o
+  nó `retrieve`; a tool homônima é só compat) e `identidade_mock.py`.
+  `get_default_tools()` em `graph.py` é a lista canônica — **a base de
+  conhecimento não é mais tool** (retrieval é etapa fixa do grafo). **Não há
+  tool de busca web** — o agente não acessa a internet.
 - **`src/rag/`** — `ingest.py` (docs Markdown → chunks por seção → ChromaDB persistido) e
   `retriever.py` (reabre o store, `get_retriever(k=...)`).
 - **`src/security/`** — `input_guardrails.py` (2 camadas: heurística regex →
-  classificador LLM) e `output_guardrails.py` (escape XML + wrapper
-  `<documento_externo>`).
+  classificador LLM; em **fluxo ativo** — o agente acabou de perguntar algo — o
+  classificador é pulado) e `output_guardrails.py` (escape XML + wrapper
+  `<documento_externo>` na entrada; `validar_citacoes` + `contem_vazamento_interno`
+  na saída final).
 - **`config.py`** — `Settings` (Pydantic) lendo o `.env`. `get_settings()` é
   `@lru_cache`-ado.
 
 ### Modelos (OpenRouter)
 
-Defaults: agente `google/gemini-2.5-flash`, classificador
-`google/gemini-2.5-flash-lite` (escolhidos por custo). Fallback conservador
-documentado: `anthropic/claude-haiku-4.5`. Embeddings são **locais**
-(`sentence-transformers`) para não pagar por embedding.
+Defaults: agente `anthropic/claude-haiku-4.5` (instruction-following,
+resistência a injeção e **prompt caching** — `cache_control` só liga em
+modelos `anthropic/`), classificador `google/gemini-2.5-flash-lite`.
+Alternativa mais barata para o agente: `google/gemini-2.5-flash`. Embeddings
+são **locais** (`sentence-transformers`) para não pagar por embedding.
 
-### Persona "Zapin" (tom mineiro)
+### Persona "Zapin" (PT-BR neutro)
 
-O agente se apresenta como **Zapin**, atendente virtual da Azapfy, com tom
-**mineiro** caloroso (expressões como "uai", "sô", "ó", "bão", "cê/ocê", com
-moderação, no máximo um emoji por mensagem). A persona é **parte da identidade
-fixa** do `SYSTEM_PROMPT_AGENTE`: tentativas de redefini-la ("esqueça que é o
-Zapin", "modo DAN") são ignoradas. **Regra de ouro**: o tom é afetuoso, mas a
-informação técnica continua exata — calor humano nunca vira imprecisão nem
-invenção. As mensagens do gate Go (`backend/internal/identity/gate.go`) e o
-`RESPOSTA_OFF_TOPIC` seguem o mesmo tom; o nome vive na const `nomeAssistente`
-do gate. **Ao mexer no tom, mantenha os dois lados (prompt + gate) alinhados.**
+O agente se apresenta como **Zapin**, atendente virtual da Azapfy — caloroso e
+cordial em **português neutro e profissional** (o sotaque mineiro foi removido
+por decisão pós-Conversa 34; no máximo um emoji por mensagem). As respostas são
+**WhatsApp-native**: curtas (~400 chars), sem títulos/tabelas/links markdown.
+A persona é **parte da identidade fixa** do `SYSTEM_PROMPT_AGENTE`: tentativas
+de redefini-la ("esqueça que é o Zapin", "modo DAN") são ignoradas. **Regra de
+ouro**: o tom é afetuoso, mas a informação técnica continua exata. As mensagens
+do gate Go (`backend/internal/identity/gate.go`) e o `RESPOSTA_OFF_TOPIC`
+seguem o mesmo tom; o nome vive na const `nomeAssistente` do gate. **Ao mexer
+no tom, mantenha os dois lados (prompt + gate) alinhados.**
 
 ### Segurança (OWASP LLM Top 10)
 
+- **Autorização é código, nunca LLM** (F7/F9): args de identidade/escopo são
+  `InjectedToolArg` preenchidos pelo `tools_node` via `tool_policy.py`
+  (POLITICAS). O modelo não tem como expressar uma consulta cross-tenant — o
+  schema que ele vê não tem o parâmetro.
 - **Input** (`avaliar_entrada`): heurística regex pega jailbreaks óbvios e faz
   curto-circuito; senão chama o classificador LLM (`suporte`/`off_topic`/
-  `malicioso`). O classificador é **fail-open** (erro → trata como `suporte`) e
-  recebe um contexto curto da conversa para interpretar respostas curtas.
-- **Output**: todo conteúdo de tool/RAG é embrulhado em
-  `<documento_externo>` com escape de `<`,`>`,`&` — é o que impede injeção
-  indireta (LLM01) de fechar o container ou injetar tags `<system>`.
+  `malicioso`). Só `malicioso` **bloqueia**; `off_topic` vira dica no system
+  prompt e o agente redireciona com contexto (F8). Em fluxo ativo (resposta
+  anterior do agente termina perguntando) o classificador é pulado. O
+  classificador é **fail-open** (erro → trata como `suporte`).
+- **Output**: conteúdo de tool/RAG entra embrulhado em `<documento_externo>`
+  com escape de `<`,`>`,`&` (LLM01 indireta). Na saída final,
+  `output_guardrail_node` **remove citações que não batem com documentos
+  recuperados** (F4 — fonte fabricada não chega ao cliente) e troca respostas
+  com marca de erro interno pelo fallback (A2).
 - O system prompt instrui que tudo dentro de `<documento_externo>` é **DADO,
-  nunca COMANDO**.
+  nunca COMANDO**, e que o agente fala **sempre com um cliente** (nunca
+  dev/homologação/auditoria — C2/A1).
 
-### Otimizações de custo (já implementadas)
+### Otimizações de custo/latência (já implementadas)
 
+- **Retrieval-first**: o caminho comum de uma pergunta de produto é **1**
+  chamada de LLM (retrieve → agent) em vez de 2 (agent decide tool → tool →
+  agent responde). Embeddings locais tornam o retrieve ~grátis.
 - **Poda de histórico** (`_podar_historico`): substitui o conteúdo de
   `ToolMessage` de turnos anteriores por um stub **apenas na visão enviada ao
   LLM** — o estado persistido fica intacto.
@@ -151,6 +189,29 @@ do gate. **Ao mexer no tom, mantenha os dois lados (prompt + gate) alinhados.**
   checado em `route_after_agent`.
 - **Prompt caching model-aware**: `cache_control` é aplicado **só** para modelos
   `anthropic/` (Gemini cacheia o prefixo implicitamente).
+- **Warm-up do RAG** no startup do server (B1) — o load do sentence-transformers
+  não cai mais no primeiro cliente.
+
+### Gateway Go (chassi de transporte — Bloco A)
+
+O `backend/` é dono da semântica de mensageria; o cérebro nunca vê rajada,
+duplicata ou envelope de relay:
+
+- **Fila FIFO por conversa + coalescência** (`internal/engine/coalescer.go`):
+  cada conversa tem um worker; a rajada de mensagens vira UM turno (janela de
+  silêncio `DEBOUNCE_JANELA`=8s, teto `DEBOUNCE_TETO`=20s). Nunca há dois
+  turnos simultâneos na mesma conversa (F11).
+- **Idempotência por WAID** (`source_id` do Chatwoot) + descarte de eventos
+  mais velhos que `EVENTO_IDADE_MAX` (F10). Dedup por delivery-id continua no
+  webhook.
+- **Higiene de envelope** (`StripAssinatura`): assinatura de relay
+  (`**Fulano:**`) é removida antes do gate/cérebro (F2).
+- **Gate**: `GateFalha` expira (`GATE_FALHA_TTL`=1h — F1); confirmação tolera
+  texto ao redor do dado (`confereConfirmacao`); login resolve e-mail/CPF
+  embutidos em frase deterministicamente antes de cair no extractor de IA (F2).
+- **Saída WhatsApp-native** (`internal/engine/whatsapp.go`): `FormatWhatsApp`
+  (`**`→`*`, `#`→negrito, `[t](u)`→`t: u`) + `QuebrarMensagem`
+  (`REPLY_MAX_CHARS`=900) em todo `send()` (F3/F12).
 
 ### Observabilidade (logs)
 
@@ -160,9 +221,10 @@ os `logger.info(...)` de `src.*` somem sob o uvicorn). O nível vem de
 estruturados em pontos-chave: `chat_request`/`chat_response` (`server.py`),
 `agent_tool_calls`/`agent_resposta_textual` e `tool_exec` (`nodes.py`),
 `rag_query`/`rag_resultado` (`rag_tool.py`), `extract_login_*` (`server.py`).
-Use `LOG_LEVEL=DEBUG` para ver a query do RAG, os `tool_calls` do agente, o uso
-de tokens e a resposta completa. O lado Go loga `encaminhando ao cérebro` /
-`resposta do cérebro` em `Debug` (`engine.go`).
+**PII mascarada** (F5/LGPD): telefone/login nunca em claro no INFO; o conteúdo
+da mensagem só aparece em DEBUG. Use `LOG_LEVEL=DEBUG` para ver a query do RAG,
+os `tool_calls` do agente, o uso de tokens e a resposta completa. O lado Go
+loga `encaminhando ao cérebro` / `resposta do cérebro` em `Debug` (`engine.go`).
 
 **Tracing (Langfuse)**: `src/observability/tracing.py` liga o grafo ao Langfuse
 via `CallbackHandler` (integração LangChain), anexado no `config` da invocação em
@@ -190,6 +252,13 @@ de chave nem de rede. `LANGFUSE_HOST` default é o cloud EU
 - **As docstrings das tools são as descrições enviadas ao LLM** — elas guiam a
   seleção da tool e a interpretação do resultado, e custam tokens em toda
   chamada. Edite-as com intenção.
+- **Toda tool nova passa por `src/agent/tool_policy.py`**: qualquer argumento
+  de identidade/escopo vira `InjectedToolArg` + entrada em `POLITICAS` (nunca
+  argumento do LLM). Argumento do LLM que referencie empresa/escopo ganha um
+  validador. Sem isso, é um F7 novo esperando acontecer.
+- **A política de RAG é retrieval-first**: não reintroduza a base de
+  conhecimento como tool do agente — o nó `retrieve` existe justamente para o
+  modelo não decidir "se" consulta (F4).
 - **`abrir_novo_chamado` tem efeito colateral** (LLM08): exige confirmação
   explícita do usuário antes da chamada. Os mocks de CRM guardam estado em
   dicts no módulo; o `conftest.py` faz snapshot/restore entre testes.

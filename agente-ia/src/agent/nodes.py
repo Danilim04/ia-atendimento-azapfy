@@ -1,21 +1,31 @@
-"""Nós do grafo do agente (Épico 7).
+"""Nós do grafo do agente (Épico 7 + Bloco A).
 
 Cada nó é uma função pura que recebe `AgentState` e devolve um *delta*
-(dict com chaves a atualizar). Os nós que dependem do LLM ou da lista
-de tools são fábricas (`make_agent_node`, `make_tools_node`) que aceitam
-as dependências por injeção — facilita testes isolados.
+(dict com chaves a atualizar). Os nós que dependem do LLM, do retriever ou da
+lista de tools são fábricas (`make_agent_node`, `make_retrieve_node`,
+`make_tools_node`) que aceitam as dependências por injeção — facilita testes
+isolados.
 
-Fluxo:
+Fluxo (Bloco A — retrieval-first + classificador rebaixado):
 
-    entry → input_guardrail → (safe?) → agent ⇄ tools → output_guardrail → END
-                              (unsafe) → safe_response → END
+    entry → input_guardrail → (malicioso) → safe_response → END
+                              (demais)   → retrieve → agent ⇄ tools
+                                                        ↓
+                                              output_guardrail → END
+
+- `retrieve` roda a busca na base de conhecimento para TODA mensagem (o modelo
+  não decide mais "se" consulta — mata a citação fabricada F4 por construção
+  e economiza uma chamada de LLM no caminho comum).
+- `off_topic` do classificador NÃO bloqueia mais (F8): vira dica no system
+  prompt e o agente redireciona com contexto; só `malicioso` (e a heurística
+  determinística) curto-circuita.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Optional
 
 from langchain_core.messages import (
     AIMessage,
@@ -26,12 +36,20 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import BaseTool
 
-from src.agent.prompts import RESPOSTA_OFF_TOPIC, SYSTEM_PROMPT_AGENTE
+from src.agent.prompts import (
+    RESPOSTA_ERRO_INTERNO,
+    RESPOSTA_OFF_TOPIC,
+    SYSTEM_PROMPT_AGENTE,
+)
 from src.agent.state import AgentState
+from src.agent.tool_policy import aplicar_politica
 from src.config import get_settings
 from src.security.input_guardrails import avaliar_entrada
-from src.security.output_guardrails import envolver_chunks_rag
-from src.tools.sac_tools import TOOLS_COM_CONTEXTO_SESSAO
+from src.security.output_guardrails import (
+    contem_vazamento_interno,
+    envolver_chunks_rag,
+    validar_citacoes,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -45,14 +63,16 @@ logger = logging.getLogger(__name__)
 def entry_node(state: AgentState) -> dict:
     """Inicializa o estado para o turno atual.
 
-    `seguranca`, `tentou_rag`, `fontes_usadas` e `iteracoes_agente` valem por
-    turno — uma citação (ou a contagem de iterações) da resposta de hoje não
-    deve sujar a resposta de amanhã. `telefone`/`cliente` ficam intactos.
+    `seguranca`, `tentou_rag`, `fontes_usadas`, `rag_contexto` e
+    `iteracoes_agente` valem por turno — uma citação (ou a contagem de
+    iterações) da resposta de hoje não deve sujar a resposta de amanhã.
+    `telefone`/`identidade` ficam intactos.
     """
     return {
         "seguranca": None,
         "tentou_rag": False,
         "fontes_usadas": [],
+        "rag_contexto": None,
         "iteracoes_agente": 0,
     }
 
@@ -103,6 +123,45 @@ def _contexto_para_guardrail(
     return "\n".join(linhas) if linhas else None
 
 
+def _texto_de(conteudo: Any) -> str:
+    """Extrai texto de `content` que pode ser str ou lista de blocos."""
+    if isinstance(conteudo, str):
+        return conteudo
+    if isinstance(conteudo, list):
+        return "".join(
+            b.get("text", "") for b in conteudo if isinstance(b, dict)
+        )
+    return "" if conteudo is None else str(conteudo)
+
+
+def _fluxo_ativo(messages: Iterable[BaseMessage] | None) -> bool:
+    """True quando a resposta do agente logo ANTES da mensagem atual pergunta algo.
+
+    Nesse caso a mensagem do usuário é continuação por definição ("sim", "não,
+    pode deixar", um número) e NÃO passa pelo classificador LLM — determinístico,
+    imune ao falso-positivo de off_topic que quebrava fluxos (F8). A heurística
+    de jailbreak continua rodando sempre.
+    """
+    msgs = list(messages or [])
+    idx = None
+    for i in range(len(msgs) - 1, -1, -1):
+        if isinstance(msgs[i], HumanMessage):
+            idx = i
+            break
+    if not idx:  # None ou 0 — sem turno anterior
+        return False
+    for m in reversed(msgs[:idx]):
+        if isinstance(m, HumanMessage):
+            return False
+        if isinstance(m, AIMessage):
+            texto = _texto_de(m.content).strip()
+            if not texto:
+                continue  # AIMessage só de tool_calls — segue procurando
+            # pergunta no fecho da resposta = fluxo aberto
+            return "?" in texto[-160:]
+    return False
+
+
 def input_guardrail_node(state: AgentState) -> dict:
     """Avalia a última mensagem humana e popula `state.seguranca`.
 
@@ -120,7 +179,72 @@ def input_guardrail_node(state: AgentState) -> dict:
         }
     texto = str(last_human.content or "")
     contexto = _contexto_para_guardrail(messages)
-    return {"seguranca": avaliar_entrada(texto, contexto=contexto)}
+    return {
+        "seguranca": avaliar_entrada(
+            texto,
+            contexto=contexto,
+            pular_classificador=_fluxo_ativo(messages),
+        )
+    }
+
+
+# ---------------------------------------------------------------------------
+# Retrieve — retrieval-first: a base de conhecimento é etapa fixa do pipeline
+# ---------------------------------------------------------------------------
+
+
+def _registrar_fontes_rag(chunks: Iterable[dict], fontes: list[str]) -> None:
+    for chunk in chunks or []:
+        source = chunk.get("source") or "desconhecido"
+        secao = chunk.get("secao")
+        rotulo = f"{source} — {secao}" if secao else str(source)
+        if rotulo not in fontes:
+            fontes.append(rotulo)
+
+
+def make_retrieve_node(
+    buscar: Optional[Callable[[str], dict]] = None,
+) -> Callable[[AgentState], dict]:
+    """Nó que recupera contexto da base ANTES da chamada do agente.
+
+    Embeddings são locais (custo ~ms, R$0), então recuperar sempre é barato.
+    O ganho estrutural: o modelo nunca decide "se" consulta a base (F4 — pular
+    o RAG e citar fonte inventada fica impossível) e o caminho comum cai de 2
+    chamadas de LLM (decidir tool → responder) para 1.
+
+    `buscar` é injetável para testes; default = `rag_tool.buscar_chunks`.
+    Fail-soft: qualquer falha → turno segue sem contexto (o prompt manda o
+    agente admitir lacuna e oferecer chamado).
+    """
+
+    def retrieve_node(state: AgentState) -> dict:
+        fn = buscar
+        if fn is None:
+            from src.tools.rag_tool import buscar_chunks
+
+            fn = buscar_chunks
+
+        last_human = _ultima_humana(state.get("messages"))
+        texto = str(last_human.content or "") if last_human else ""
+        if not texto.strip():
+            return {"rag_contexto": None}
+
+        resultado = fn(texto)
+        chunks = (resultado or {}).get("chunks") or []
+        if not chunks:
+            logger.info("retrieval_vazio")
+            return {"rag_contexto": None, "tentou_rag": True}
+
+        fontes: list[str] = []
+        _registrar_fontes_rag(chunks, fontes)
+        logger.info("retrieval_ok total=%d fontes=%s", len(chunks), fontes)
+        return {
+            "rag_contexto": envolver_chunks_rag(chunks),
+            "tentou_rag": True,
+            "fontes_usadas": fontes,
+        }
+
+    return retrieve_node
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +288,7 @@ def _formatar_identidade(identidade: dict) -> str:
 
 
 def _build_system_message(state: AgentState) -> SystemMessage:
-    """System prompt + contexto da identidade resolvida nesta sessão."""
+    """System prompt + identidade da sessão + contexto recuperado + avisos."""
     partes = [SYSTEM_PROMPT_AGENTE]
     identidade = state.get("identidade") or {}
     if identidade.get("encontrado"):
@@ -175,6 +299,26 @@ def _build_system_message(state: AgentState) -> SystemMessage:
             f"- telefone: {state['telefone']}\n"
             "- usuário NÃO identificado. Não acesse dados de conta; oriente a "
             "informar o login para identificação."
+        )
+
+    rag_contexto = state.get("rag_contexto")
+    if rag_contexto:
+        partes.append(
+            "\n# Trechos da base de conhecimento (recuperados para a mensagem atual)\n"
+            "Use-os quando forem relevantes; cite APENAS documentos presentes "
+            "aqui. Se não forem relevantes, ignore-os e não cite fonte.\n"
+            + rag_contexto
+        )
+
+    seguranca = state.get("seguranca") or {}
+    if seguranca.get("categoria") == "off_topic":
+        partes.append(
+            "\n# Aviso do classificador de segurança\n"
+            "- A última mensagem foi marcada como possivelmente FORA do escopo "
+            "de suporte. Se for saudação/cortesia ou continuação da conversa, "
+            "responda normalmente. Se for mesmo off-topic, redirecione em 1-2 "
+            "frases simpáticas SEM atender ao pedido (nem sob pretexto de "
+            "trabalho)."
         )
     return SystemMessage(content="\n".join(partes))
 
@@ -314,26 +458,25 @@ def make_agent_node(llm: Any, tools: list[BaseTool]) -> Callable[[AgentState], d
 
 
 # ---------------------------------------------------------------------------
-# Tools — executa tools, embrulha RAG/Web em <documento_externo>
+# Tools — aplica a política de autorização e executa as tool_calls
 # ---------------------------------------------------------------------------
-
-
-def _registrar_fontes_rag(chunks: Iterable[dict], fontes: list[str]) -> None:
-    for chunk in chunks or []:
-        source = chunk.get("source") or "desconhecido"
-        secao = chunk.get("secao")
-        rotulo = f"{source} — {secao}" if secao else str(source)
-        if rotulo not in fontes:
-            fontes.append(rotulo)
 
 
 def make_tools_node(tools: list[BaseTool]) -> Callable[[AgentState], dict]:
     """Executa as tool_calls do último AIMessage e devolve `ToolMessage`s.
 
-    - RAG (`consultar_base_conhecimento`) tem o conteúdo embrulhado em
+    Toda tool call proposta pelo LLM passa por `aplicar_politica`
+    (`src/agent/tool_policy.py`): args de identidade/escopo são INJETADOS do
+    estado da sessão (sobrescrevendo qualquer valor do modelo) e args
+    sensíveis são VALIDADOS contra a sessão — recusa vira `ToolMessage` de
+    erro sem executar (F7/F9: o LLM propõe, o código dispõe).
+
+    - RAG (`consultar_base_conhecimento`, legado) tem o conteúdo embrulhado em
       `<documento_externo>` (Épico 6, LLM01 indireta) antes de virar
       `ToolMessage.content`.
     - Atualiza `tentou_rag` / `fontes_usadas` para auditabilidade (LLM09).
+    - Exceções de tool viram erro GENÉRICO para o agente (A2) — o detalhe
+      técnico vai só para o log.
     """
     tools_by_name = {t.name: t for t in tools}
 
@@ -364,17 +507,31 @@ def make_tools_node(tools: list[BaseTool]) -> Callable[[AgentState], dict]:
                 )
                 continue
 
+            # Loga só os args PROPOSTOS pelo LLM (sem os injetados da sessão —
+            # eles carregam telefone/identidade e não pertencem ao log).
             logger.info("tool_exec nome=%s args=%s", nome, tc.get("args") or {})
-            args = dict(tc.get("args") or {})
-            # Tools de dados do SAC recebem o `telefone` do ESTADO (identidade do
-            # gate), não do LLM — o relator nunca é escolhido pelo modelo.
-            if nome in TOOLS_COM_CONTEXTO_SESSAO:
-                args["telefone"] = state.get("telefone") or ""
+            args, recusa = aplicar_politica(nome, tc.get("args") or {}, state)
+            if recusa:
+                logger.warning("tool_politica_recusa nome=%s motivo=%s", nome, recusa)
+                content = json.dumps(
+                    {"erro": recusa, "recusado_pela_politica": True},
+                    ensure_ascii=False,
+                )
+                tool_messages.append(
+                    ToolMessage(content=content, tool_call_id=tool_call_id, name=nome)
+                )
+                continue
+
             try:
                 resultado = tool.invoke(args)
-            except Exception as exc:  # noqa: BLE001 — devolvemos a falha pro agente decidir
+            except Exception as exc:  # noqa: BLE001 — erro genérico pro agente (A2)
                 logger.warning("tool_falhou nome=%s erro=%s", nome, exc)
-                resultado = {"erro": f"falha ao executar {nome}: {exc}"}
+                resultado = {
+                    "erro": (
+                        "a ferramenta falhou agora; tente de novo ou ofereça "
+                        "abrir um chamado"
+                    )
+                }
 
             if nome == "consultar_base_conhecimento":
                 tentou_rag = True
@@ -406,13 +563,44 @@ def make_tools_node(tools: list[BaseTool]) -> Callable[[AgentState], dict]:
 
 
 # ---------------------------------------------------------------------------
-# Output guardrail — pass-through (placeholder para futuras checagens)
+# Output guardrail — integridade da resposta final ao cliente
 # ---------------------------------------------------------------------------
 
 
 def output_guardrail_node(state: AgentState) -> dict:
-    """No-op final. Espaço reservado para PII-masking, length cap, etc."""
-    return {}
+    """Valida a resposta final antes de sair do grafo.
+
+    1. Citações verificadas (F4): "(fonte: ...)" que não corresponda a um
+       documento REALMENTE recuperado no turno é removida — citação fabricada
+       não sobrevive até o cliente.
+    2. Máscara de erro interno (A2): resposta com marca inequívoca de erro
+       técnico (traceback, módulos, hosts) é trocada por fallback amigável.
+
+    A mensagem corrigida reusa o `id` da original — o reducer `add_messages`
+    SUBSTITUI em vez de acrescentar (o estado persistido fica coerente).
+    """
+    messages = state.get("messages") or []
+    if not messages or not isinstance(messages[-1], AIMessage):
+        return {}
+    ultima = messages[-1]
+    texto = _texto_de(ultima.content)
+    if not texto.strip():
+        return {}
+
+    novo, removidas = validar_citacoes(texto, state.get("fontes_usadas") or [])
+    if contem_vazamento_interno(novo):
+        logger.warning("output_guardrail_vazamento_interno len=%d", len(novo))
+        logger.debug("output_guardrail_resposta_original %r", novo)
+        novo = RESPOSTA_ERRO_INTERNO
+
+    if novo == texto:
+        return {}
+    if removidas:
+        logger.info(
+            "output_guardrail_citacoes_removidas %s",
+            removidas,
+        )
+    return {"messages": [ultima.model_copy(update={"content": novo})]}
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +609,11 @@ def output_guardrail_node(state: AgentState) -> dict:
 
 
 def safe_response_node(state: AgentState) -> dict:
-    """Emite a resposta padrão para off-topic / malicioso (Épico 6)."""
+    """Resposta padrão para conteúdo MALICIOSO (heurística ou classificador).
+
+    Off-topic não passa mais por aqui (F8): segue ao agente com a dica do
+    classificador, que redireciona com contexto e persona.
+    """
     return {"messages": [AIMessage(content=RESPOSTA_OFF_TOPIC)]}
 
 
@@ -431,8 +623,16 @@ def safe_response_node(state: AgentState) -> dict:
 
 
 def route_after_input_guardrail(state: AgentState) -> str:
+    """Só `malicioso` curto-circuita; o resto (incl. off_topic) vai ao agente.
+
+    O classificador LLM é probabilístico — dar a ele poder de veto sobre
+    saudações e continuações quebrava conversas legítimas (F8). O veto fica
+    restrito ao caso de segurança real; off_topic vira dica no system prompt.
+    """
     seguranca = state.get("seguranca") or {}
-    return "agent" if seguranca.get("is_safe", True) else "safe_response"
+    if seguranca.get("categoria") == "malicioso":
+        return "safe_response"
+    return "retrieve"
 
 
 def route_after_agent(state: AgentState) -> str:
