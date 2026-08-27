@@ -69,11 +69,12 @@ Fluxo de produção:
   (`AGENT_MAX_ITERACOES=5`), prompt caching só para modelos `anthropic/`.
 - **Go**: pacotes pequenos por responsabilidade; identidade resolvida no Go
   (mecânica, nunca argumento do LLM); testes com fakes (sem rede/Mongo).
-- **Persona "Zapin" (tom mineiro)**: o agente se apresenta como Zapin, atendente
-  da Azapfy, com tom mineiro caloroso. Vive em **dois lados** que devem ficar
-  alinhados: `prompts.py` (`SYSTEM_PROMPT_AGENTE`, `RESPOSTA_OFF_TOPIC`) e o gate
-  Go (`gate.go`, const `nomeAssistente` + mensagens). Tom afetuoso, mas a
-  informação técnica continua exata.
+- **Persona "Zapin" (tom humano, PT-BR neutro)**: o agente se apresenta como
+  Zapin, atendente da Azapfy, com tom humano e cordial em português neutro
+  (o sotaque mineiro foi removido no Bloco A). Vive em **dois lados** que devem
+  ficar alinhados: `prompts.py` (`SYSTEM_PROMPT_AGENTE`, `RESPOSTA_OFF_TOPIC`)
+  e o gate Go (`gate.go`, const `nomeAssistente` + mensagens). Tom afetuoso,
+  mas a informação técnica continua exata.
 - **Resolução de login (gate Go)**: determinístico (`loginCandidatos`: msg crua,
   minúsculas, dígitos só p/ CPF/CNPJ formatado puro) → fallback IA via
   `POST /extract-login` (`src/identity/login_extractor.py`). Valor extraído é só

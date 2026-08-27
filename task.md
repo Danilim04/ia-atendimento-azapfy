@@ -19,7 +19,7 @@
 - [x] `app.py` — Chainlit dev (streaming, `/trocar-telefone`, identidade mock).
 - [x] Otimizações de custo: poda de histórico, prompt caching model-aware (`anthropic/`).
 - [x] Cenários E2E 1–7 cobertos em `tests/test_e2e_scenarios.py`.
-- [x] **Persona "Zapin"** (tom mineiro) no `SYSTEM_PROMPT_AGENTE` + `RESPOSTA_OFF_TOPIC` (alinhada ao gate Go).
+- [x] **Persona "Zapin"** no `SYSTEM_PROMPT_AGENTE` + `RESPOSTA_OFF_TOPIC` (alinhada ao gate Go). *(Bloco A: tom migrado de mineiro → humano/cordial em PT-BR neutro.)*
 - [x] **Extrator de login** (`src/identity/login_extractor.py`, `SYSTEM_PROMPT_EXTRATOR_LOGIN`) exposto em `POST /extract-login` — fallback do gate Go (fail-soft, LLM barato, saída estruturada). Testes em `tests/test_login_extractor.py`.
 - [x] **Observabilidade (logs)**: `_setup_logging()` + `LOG_LEVEL` no `.env`; logs estruturados em server/nodes/rag_tool (`chat_request`, `agent_tool_calls`, `tool_exec`, `rag_query`…).
 
@@ -28,7 +28,7 @@
 - [x] **Gate de identidade** (FSM): telefone → cache base própria (SQLite) → pede login → Mongo `BuscarPorLogin` + projeção (só `ativo`) → confirma e-mail/nome → cacheia com TTL.
 - [x] Roteamento p/ humano via labels do Chatwoot.
 - [x] **Resolução de login**: determinístico (`loginCandidatos`: msg crua, minúsculas, dígitos só p/ CPF/CNPJ formatado puro) + fallback IA via `LoginExtractor`/`POST /extract-login` (fail-soft).
-- [x] Mensagens do gate + saudação no tom **"Zapin"** (mineiro); nome na const `nomeAssistente`.
+- [x] Mensagens do gate + saudação no tom **"Zapin"** (humano/cordial, PT-BR neutro desde o Bloco A); nome na const `nomeAssistente`.
 - [x] `mongo.Repo` (conexão real) + projeção; `brain.Client` (Contrato A + `ExtrairLogin`); `engine` (orquestra, com logs Debug); `store` SQLite.
 - [x] Testes: `internal/identity` (inclui CPF formatado, fallback IA, IA indisponível via `fakeExtractor`) + `internal/mongo` (com fakes, sem rede).
 

@@ -2,7 +2,7 @@
 
 Monorepo com **dois projetos** que se integram pelo **Contrato A** (`POST /chat`):
 
-- **`agente-ia/`** — o cérebro: agente de IA de suporte técnico (persona **"Zapin"**, tom mineiro), em **LangGraph + LangChain + Chainlit**, com RAG local (ChromaDB) como única fonte externa (o agente **não acessa a internet**) e defesa contra prompt injection (**OWASP LLM Top 10**).
+- **`agente-ia/`** — o cérebro: agente de IA de suporte técnico (persona **"Zapin"**, tom humano e cordial em PT-BR neutro), em **LangGraph + LangChain + Chainlit**, com RAG local (ChromaDB) como única fonte externa (o agente **não acessa a internet**) e defesa contra prompt injection (**OWASP LLM Top 10**).
 - **`backend/`** — o gateway em **Go**: recebe os webhooks do **Chatwoot** (WhatsApp), resolve a **identidade** do usuário no edge (telefone → login → MongoDB Azapfy → confirmação) e, só quando autenticado, encaminha a mensagem ao cérebro via o Contrato A.
 - **`mock-chatwoot/`** — harness de teste E2E que **finge ser o Chatwoot** (stdlib Python, sem `pip`), para exercitar o fluxo inteiro local sem WhatsApp real. Ver [`mock-chatwoot/README.md`](./mock-chatwoot/README.md).
 
