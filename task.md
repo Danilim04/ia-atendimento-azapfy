@@ -8,7 +8,7 @@
 
 ## ✅ Feitas
 
-### agente-ia (cérebro Python) — POC funcional, ~114 testes
+### agente-ia (cérebro Python) — em homologação de cliente, ~114 testes
 - [x] Grafo LangGraph completo (`entry → input_guardrail → agent ⇄ tools → output_guardrail / safe_response`) + roteamento condicional.
 - [x] Teto de iterações do loop agent⇄tools (`AGENT_MAX_ITERACOES=5`).
 - [x] Guardrail de **input**: heurística regex → classificador LLM (fail-open, com contexto curto da conversa).

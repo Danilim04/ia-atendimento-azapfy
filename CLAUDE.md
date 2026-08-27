@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## O que é o projeto
 
-POC de agente de **suporte técnico da Azapfy**: um chatbot que identifica o
-cliente por telefone, responde dúvidas usando uma base de conhecimento local
-(RAG sobre as docs Markdown em `docs/*.md`), consulta/abre chamados num CRM
-mockado, e se defende contra prompt injection (OWASP LLM Top 10). O agente
+Agente de **suporte técnico da Azapfy** (em homologação de cliente): um chatbot
+que identifica o cliente por telefone, responde dúvidas usando uma base de
+conhecimento local (RAG sobre as docs Markdown em `docs/*.md`), consulta/abre
+chamados num CRM mockado, e se defende contra prompt injection (OWASP LLM Top 10). O agente
 **não tem acesso à internet**: a base de conhecimento local é a única fonte
 externa; quando ela não cobre o assunto, o agente oferece abrir um chamado.
 
@@ -163,6 +163,16 @@ estruturados em pontos-chave: `chat_request`/`chat_response` (`server.py`),
 Use `LOG_LEVEL=DEBUG` para ver a query do RAG, os `tool_calls` do agente, o uso
 de tokens e a resposta completa. O lado Go loga `encaminhando ao cérebro` /
 `resposta do cérebro` em `Debug` (`engine.go`).
+
+**Tracing (Langfuse)**: `src/observability/tracing.py` liga o grafo ao Langfuse
+via `CallbackHandler` (integração LangChain), anexado no `config` da invocação em
+`server.py` (`processar_chat`). Cada turno vira um trace, agrupado por conversa
+(`langfuse_session_id` = `conversation_id`); o `user_id` vai **mascarado** (não
+manda PID/login em claro pro serviço externo). É **fail-safe**: sem
+`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` (ou em qualquer erro de config) o
+tracing fica desligado e o agente roda normal — por isso dev/testes não precisam
+de chave nem de rede. `LANGFUSE_HOST` default é o cloud EU
+(`https://cloud.langfuse.com`; US: `https://us.cloud.langfuse.com`).
 
 ## Regras técnicas para mexer no projeto
 

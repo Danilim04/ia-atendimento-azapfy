@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     sac_tools_token: str = Field("", alias="SAC_TOOLS_TOKEN")
     sac_tools_timeout: float = Field(30.0, alias="SAC_TOOLS_TIMEOUT")
 
+    # --- Observabilidade: Langfuse (tracing) — OPCIONAL ---
+    # Sem as duas chaves, o tracing fica DESLIGADO e o agente roda normal
+    # (fail-safe: dev/testes sem rede e o período até as chaves serem preenchidas).
+    # Host: https://cloud.langfuse.com (EU) ou https://us.cloud.langfuse.com (US).
+    langfuse_public_key: str = Field("", alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str = Field("", alias="LANGFUSE_SECRET_KEY")
+    langfuse_host: str = Field("https://cloud.langfuse.com", alias="LANGFUSE_HOST")
+
+    @property
+    def langfuse_enabled(self) -> bool:
+        """Tracing só liga quando as duas chaves estão presentes."""
+        return bool(self.langfuse_public_key and self.langfuse_secret_key)
+
 
 @lru_cache
 def get_settings() -> Settings:

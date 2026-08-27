@@ -8,7 +8,7 @@ A Azapfy precisa de um agente de IA para atendimento de suporte técnico que:
 - **Responda dúvidas técnicas** pela base de conhecimento interna (RAG sobre as docs). O agente **não acessa a internet**: quando a base não cobre o assunto, ele responde com o que tem ou oferece abrir um chamado.
 - **Seja resiliente a ataques** de prompt injection (direto e indireto) — princípio AppSec/OWASP LLM Top 10.
 
-O outcome desta fase é um **POC funcional rodando no Chainlit**, com tools mockadas, pronto para depois plugar nos backends reais sem refatorar a arquitetura do agente.
+O outcome desta fase é um **agente funcional rodando no Chainlit**, com tools mockadas, pronto para depois plugar nos backends reais sem refatorar a arquitetura do agente.
 
 ---
 
@@ -247,6 +247,6 @@ Arquivo `src/tools/crm_mocks.py` — todas decoradas com `@tool` do LangChain, d
 ## Fora de Escopo desta Fase
 
 - Integração com backends reais (CRM, billing, ticketing) — fica para fase 2.
-- Autenticação/autorização robusta do Chainlit — POC roda local.
+- Autenticação/autorização robusta do Chainlit — é o harness de dev (roda local); em produção o acesso é pelo gateway Go + Chatwoot.
 - Observabilidade: logging estruturado por `LOG_LEVEL` **já implementado** (server/nodes/rag_tool); tracing (LangSmith, Langfuse) segue opcional, para depois.
-- Deploy (Docker, cloud) — POC roda local.
+- Deploy (Docker, cloud) — era fora de escopo desta fase; já implementado depois (VPS + pipeline de deploy).

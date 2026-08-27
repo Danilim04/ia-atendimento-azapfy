@@ -15,6 +15,8 @@
 # Opcionais:        SAC_API_TOKEN · SAC_SERVICE_COD · CHATWOOT_API_TOKEN
 #                   (a fonte primária do token do Chatwoot é o ESTADO da VM,
 #                   .chatwoot-token — gravado pela pipeline configure-chatwoot)
+#                   LANGFUSE_PUBLIC_KEY · LANGFUSE_SECRET_KEY · LANGFUSE_HOST
+#                   (tracing; vazios = desligado. HOST default = cloud EU)
 # ==============================================================================
 name: Deploy
 
@@ -118,6 +120,10 @@ jobs:
           CHATWOOT_API_TOKEN: ${{ secrets.CHATWOOT_API_TOKEN }}
           SAC_API_TOKEN: ${{ secrets.SAC_API_TOKEN }}
           SAC_SERVICE_COD: ${{ secrets.SAC_SERVICE_COD }}
+          # Langfuse (tracing) — opcionais; vazios = tracing desligado.
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST || 'https://cloud.langfuse.com' }}
         run: ./deploy/env/render-env.sh > "$RUNNER_TEMP/prod.env"
 
       - name: Deploy remoto (script .sh)

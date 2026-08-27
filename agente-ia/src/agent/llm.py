@@ -77,7 +77,7 @@ def get_embeddings() -> "Embeddings":
     """Embeddings locais via `sentence-transformers` em CPU.
 
     Mantemos os embeddings locais (não-OpenRouter) para evitar custo por
-    embedding em ingest/retrieval e para permitir rodar o POC offline.
+    embedding em ingest/retrieval e para permitir rodar o agente offline.
     Se um dia migrarmos para embeddings remotos, este é o ponto de troca.
     """
     from langchain_huggingface import HuggingFaceEmbeddings

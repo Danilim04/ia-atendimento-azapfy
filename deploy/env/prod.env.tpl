@@ -33,6 +33,12 @@ EMBEDDINGS_MODEL=sentence-transformers/all-MiniLM-L6-v2
 # --- Observabilidade ----------------------------------------------------------
 LOG_LEVEL=info
 
+# --- Cérebro: Langfuse (tracing) — chaves via GitHub Secrets (opcional) --------
+# Vazias = tracing desligado (o agente roda normal). Host default: cloud EU.
+LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+LANGFUSE_HOST=${LANGFUSE_HOST}
+
 # --- Gateway: Chatwoot (por DENTRO da rede docker do servidor) ----------------
 CHATWOOT_BASE_URL=http://chatwoot-rails:3000
 CHATWOOT_ACCOUNT_ID=1

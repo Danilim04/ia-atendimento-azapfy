@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.graph import build_graph
 from src.identity.login_extractor import extrair_login
+from src.observability.tracing import get_tracing_handler
 
 
 def _setup_logging() -> None:
@@ -81,6 +82,17 @@ class ExtractLoginResponse(BaseModel):
     login: Optional[str] = None
 
 
+def _mascarar(valor: str) -> str:
+    """Mascara um identificador deixando visíveis só os últimos 3 caracteres.
+
+    Usado para não enviar PII (login/CPF/e-mail) em claro ao tracing externo.
+    """
+    v = (valor or "").strip()
+    if len(v) <= 3:
+        return "*" * len(v)
+    return "*" * (len(v) - 3) + v[-3:]
+
+
 def _extrair_reply(valores: dict) -> str:
     """Último texto do agente. Tolera `content` str ou lista de blocos (Anthropic)."""
     for m in reversed(valores.get("messages") or []):
@@ -113,7 +125,21 @@ async def processar_chat(graph: Any, req: ChatRequest) -> ChatResponse:
         req.mensagem,
     )
 
-    config = {"configurable": {"thread_id": req.conversation_id}}
+    config: dict[str, Any] = {"configurable": {"thread_id": req.conversation_id}}
+    # Tracing opcional (Langfuse): agrupa o turno pela conversa e registra
+    # custo/latência/tool_calls. Off quando as chaves não estão configuradas.
+    handler = get_tracing_handler()
+    if handler is not None:
+        metadata: dict[str, Any] = {
+            "langfuse_session_id": req.conversation_id,
+            "langfuse_tags": [req.canal],
+        }
+        if login:
+            metadata["langfuse_user_id"] = _mascarar(login)
+        config["callbacks"] = [handler]
+        config["metadata"] = metadata
+        config["run_name"] = "chat"
+
     inputs: dict[str, Any] = {
         "identidade": req.identidade,
         "messages": [HumanMessage(content=req.mensagem)],
