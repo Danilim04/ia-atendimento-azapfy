@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         "https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL"
     )
     openrouter_model: str = Field(
-        "anthropic/claude-haiku-4.5", alias="OPENROUTER_MODEL"
+        "google/gemini-3.5-flash", alias="OPENROUTER_MODEL"
     )
     openrouter_classifier_model: str = Field(
         "google/gemini-2.5-flash-lite", alias="OPENROUTER_CLASSIFIER_MODEL"

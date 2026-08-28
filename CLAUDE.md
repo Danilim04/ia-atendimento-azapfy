@@ -142,11 +142,12 @@ do estado e validados pela política (`tool_policy.py`); trabalho determinístic
 
 ### Modelos (OpenRouter)
 
-Defaults: agente `anthropic/claude-haiku-4.5` (instruction-following,
-resistência a injeção e **prompt caching** — `cache_control` só liga em
-modelos `anthropic/`), classificador `google/gemini-2.5-flash-lite`.
-Alternativa mais barata para o agente: `google/gemini-2.5-flash`. Embeddings
-são **locais** (`sentence-transformers`) para não pagar por embedding.
+Defaults: agente `google/gemini-3.5-flash` (caching implícito do Gemini; o
+`cache_control` explícito só liga em modelos `anthropic/`, portanto fica
+desativado), classificador `google/gemini-2.5-flash-lite`. Alternativas para
+o agente: `google/gemini-3.7-flash` (mais novo/barato) ou
+`anthropic/claude-haiku-4.5` (religa o `cache_control`). Embeddings são
+**locais** (`sentence-transformers`) para não pagar por embedding.
 
 ### Persona "Zapin" (PT-BR neutro)
 

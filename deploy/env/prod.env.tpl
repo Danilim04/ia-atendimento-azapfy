@@ -17,9 +17,9 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
 # --- Cérebro: OpenRouter ------------------------------------------------------
 OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-# Bloco A: agente no Haiku 4.5 (instruction-following + resistência a injeção
-# + prompt caching via cache_control, que só liga em modelos anthropic/).
-OPENROUTER_MODEL=anthropic/claude-haiku-4.5
+# Agente no Gemini 3.5 Flash (decisão pós-Bloco A; caching implícito do
+# Gemini — o cache_control explícito só liga em modelos anthropic/).
+OPENROUTER_MODEL=google/gemini-3.5-flash
 OPENROUTER_CLASSIFIER_MODEL=google/gemini-2.5-flash-lite
 APP_REFERER=https://azapfy.com.br
 APP_TITLE=Azapfy Suporte IA

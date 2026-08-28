@@ -70,9 +70,10 @@ Três mecanismos em camadas:
 
 ## 4. Decisões de modelo e persona
 
-- **Agente:** `anthropic/claude-haiku-4.5` (era gemini-2.5-flash). Motivos:
-  instruction-following/resistência a injeção melhores e destrava o prompt
-  caching (o projeto só aplica `cache_control` a modelos `anthropic/`).
+- **Agente:** `google/gemini-3.5-flash` (Bloco A adotou `claude-haiku-4.5`,
+  era gemini-2.5-flash antes; trocado pós-homologação por preferência de
+  qualidade nesta tarefa). Sem `cache_control` explícito (o projeto só o
+  aplica a modelos `anthropic/`) — o Gemini cacheia o prefixo implicitamente.
   Classificador continua `gemini-2.5-flash-lite` (prompt melhorado primeiro).
 - **Persona:** Zapin mantém o calor, **sotaque mineiro removido** (decisão
   pós-Conversa 34) — prompt e mensagens do gate Go atualizados juntos.
@@ -96,7 +97,7 @@ Três mecanismos em camadas:
 | `REPLY_MAX_CHARS` | `900` | Go | F12 — divisão de respostas longas |
 | `LLM_TIMEOUT` | `45` (s) | Py | timeout por chamada < BRAIN_TIMEOUT |
 | `CHECKPOINT_DB_PATH` | `./data/checkpoints.db` | Py | histórico persistente (volume `brain-data` no compose) |
-| `OPENROUTER_MODEL` | `anthropic/claude-haiku-4.5` | Py | novo default do agente |
+| `OPENROUTER_MODEL` | `google/gemini-3.5-flash` | Py | novo default do agente |
 
 ## 7. Riscos residuais assumidos (com os olhos abertos)
 

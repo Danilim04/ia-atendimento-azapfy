@@ -451,7 +451,7 @@ def test_podar_historico_sem_humana_devolve_intacto():
 
 def test_modelo_suporta_cache_control_so_para_anthropic():
     assert nodes._modelo_suporta_cache_control("anthropic/claude-haiku-4.5") is True
-    assert nodes._modelo_suporta_cache_control("google/gemini-2.5-flash") is False
+    assert nodes._modelo_suporta_cache_control("google/gemini-3.5-flash") is False
     assert nodes._modelo_suporta_cache_control("") is False
 
 
