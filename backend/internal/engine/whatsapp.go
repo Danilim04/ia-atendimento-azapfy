@@ -48,6 +48,24 @@ func FormatWhatsApp(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// reBolha casa uma linha-delimitadora de bolha: nada além de 3+ hífens. É o
+// marcador que o SYSTEM_PROMPT_AGENTE instrui o LLM a colocar entre mensagens.
+var reBolha = regexp.MustCompile(`(?m)^[ \t]*-{3,}[ \t]*$`)
+
+// DividirBolhas separa a resposta do cérebro nas "bolhas" marcadas com uma
+// linha `---` (contrato com o prompt do agente): cada bolha vira uma mensagem
+// separada no chat, imitando o ritmo de quem digita. Sem marcador, devolve o
+// texto inteiro como bolha única; partes vazias são descartadas.
+func DividirBolhas(s string) []string {
+	var bolhas []string
+	for _, b := range reBolha.Split(s, -1) {
+		if b = strings.TrimSpace(b); b != "" {
+			bolhas = append(bolhas, b)
+		}
+	}
+	return bolhas
+}
+
 // QuebrarMensagem divide um texto em partes de até max runas, preferindo
 // quebrar em parágrafo (\n\n), depois em linha, depois em espaço. max <= 0
 // devolve o texto inteiro em uma parte.

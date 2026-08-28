@@ -243,16 +243,39 @@ func (e *Engine) rotearHumano(ctx context.Context, conv *chatwoot.Conversation) 
 	}
 }
 
-// send formata para o WhatsApp (F3) e divide respostas longas (F12) antes de
-// entregar ao Chatwoot.
+// send divide a resposta nas bolhas marcadas pelo cérebro (`---`), formata
+// cada uma para o WhatsApp (F3) e quebra as que ainda passarem do limite
+// (F12), entregando cada parte como mensagem separada — com uma pausa curta
+// entre elas para imitar o ritmo de quem digita.
 func (e *Engine) send(ctx context.Context, convID int64, content string) {
 	if content == "" {
 		return
 	}
-	for _, parte := range QuebrarMensagem(FormatWhatsApp(content), e.cfg.ReplyMaxChars) {
-		if err := e.cw.SendMessage(ctx, convID, parte, false); err != nil {
-			e.log.Error("enviar mensagem", "conversation_id", convID, "err", err)
-			return
+	primeira := true
+	for _, bolha := range DividirBolhas(content) {
+		for _, parte := range QuebrarMensagem(FormatWhatsApp(bolha), e.cfg.ReplyMaxChars) {
+			if !primeira {
+				e.pausaEntreBolhas(ctx)
+			}
+			primeira = false
+			if err := e.cw.SendMessage(ctx, convID, parte, false); err != nil {
+				e.log.Error("enviar mensagem", "conversation_id", convID, "err", err)
+				return
+			}
 		}
+	}
+}
+
+// pausaEntreBolhas espera BolhaPausa entre mensagens consecutivas do mesmo
+// turno. O worker é por conversa, então a espera não atrasa outras conversas.
+func (e *Engine) pausaEntreBolhas(ctx context.Context) {
+	if e.cfg.BolhaPausa <= 0 {
+		return
+	}
+	t := time.NewTimer(e.cfg.BolhaPausa)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
 	}
 }

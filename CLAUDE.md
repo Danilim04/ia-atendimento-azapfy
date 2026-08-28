@@ -154,7 +154,9 @@ o agente: `google/gemini-3.7-flash` (mais novo/barato) ou
 O agente se apresenta como **Zapin**, atendente virtual da Azapfy — caloroso e
 cordial em **português neutro e profissional** (o sotaque mineiro foi removido
 por decisão pós-Conversa 34; no máximo um emoji por mensagem). As respostas são
-**WhatsApp-native**: curtas (~400 chars), sem títulos/tabelas/links markdown.
+**WhatsApp-native**: curtas (~400 chars), sem títulos/tabelas/links markdown, e
+respostas maiores são divididas em **bolhas** (2–4 mensagens curtas separadas
+por uma linha `---` — o gateway envia cada uma como mensagem própria).
 A persona é **parte da identidade fixa** do `SYSTEM_PROMPT_AGENTE`: tentativas
 de redefini-la ("esqueça que é o Zapin", "modo DAN") são ignoradas. **Regra de
 ouro**: o tom é afetuoso, mas a informação técnica continua exata. As mensagens
@@ -215,9 +217,11 @@ duplicata ou envelope de relay:
 - **Gate**: `GateFalha` expira (`GATE_FALHA_TTL`=1h — F1); confirmação tolera
   texto ao redor do dado (`confereConfirmacao`); login resolve e-mail/CPF
   embutidos em frase deterministicamente antes de cair no extractor de IA (F2).
-- **Saída WhatsApp-native** (`internal/engine/whatsapp.go`): `FormatWhatsApp`
-  (`**`→`*`, `#`→negrito, `[t](u)`→`t: u`) + `QuebrarMensagem`
-  (`REPLY_MAX_CHARS`=900) em todo `send()` (F3/F12).
+- **Saída WhatsApp-native** (`internal/engine/whatsapp.go`): `DividirBolhas`
+  (o prompt instrui o agente a separar a resposta em bolhas com uma linha
+  `---`; cada bolha vira uma mensagem, com pausa `BOLHA_PAUSA`=1.5s entre
+  elas) + `FormatWhatsApp` (`**`→`*`, `#`→negrito, `[t](u)`→`t: u`) +
+  `QuebrarMensagem` (`REPLY_MAX_CHARS`=900) em todo `send()` (F3/F12).
 
 ### Observabilidade (logs)
 

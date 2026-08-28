@@ -55,6 +55,7 @@ type Config struct {
 	DebounceTeto   time.Duration // espera máxima acumulada antes de processar mesmo sem silêncio
 	EventoIdadeMax time.Duration // mensagens mais velhas que isso são descartadas (F10); 0 = sem corte
 	ReplyMaxChars  int           // tamanho-alvo de cada mensagem enviada ao WhatsApp (F12); 0 = sem quebra
+	BolhaPausa     time.Duration // pausa entre bolhas consecutivas do mesmo turno (ritmo humano); 0 = sem pausa
 
 	// SAC (atendimento/chamados): tools de dados que o cérebro chama via toolsapi.
 	// Tudo opcional — sem SAC_BASE_URL a API de tools não é exposta.
@@ -127,6 +128,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.EventoIdadeMax, err = parseDuration(getenv("EVENTO_IDADE_MAX", "10m")); err != nil {
 		return nil, fmt.Errorf("EVENTO_IDADE_MAX inválido: %w", err)
+	}
+	if cfg.BolhaPausa, err = parseDuration(getenv("BOLHA_PAUSA", "1500ms")); err != nil {
+		return nil, fmt.Errorf("BOLHA_PAUSA inválido: %w", err)
 	}
 
 	var missing []string
