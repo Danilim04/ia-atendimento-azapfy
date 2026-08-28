@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any, Callable, Iterable, Optional
+from zoneinfo import ZoneInfo
 
 from langchain_core.messages import (
     AIMessage,
@@ -291,6 +293,22 @@ def _formatar_identidade(identidade: dict) -> str:
     return "\n".join(linhas)
 
 
+def _periodo_do_dia(agora: Optional[datetime] = None) -> str:
+    """Período do dia em Brasília, para a saudação da persona ("Boníssimo
+    dia"/"Boníssima tarde"/"Boa noite"). O gate Go tem o equivalente em
+    `saudacaoAbertura` (gate.go) — manter os cortes de horário alinhados."""
+    if agora is None:
+        try:
+            agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        except Exception:  # sem tzdata no host: hora local é melhor que quebrar
+            agora = datetime.now()
+    if 5 <= agora.hour < 12:
+        return "manhã"
+    if 12 <= agora.hour < 18:
+        return "tarde"
+    return "noite"
+
+
 def _build_system_message(state: AgentState) -> SystemMessage:
     """System prompt + identidade da sessão + contexto recuperado + avisos."""
     partes = [SYSTEM_PROMPT_AGENTE]
@@ -324,6 +342,13 @@ def _build_system_message(state: AgentState) -> SystemMessage:
             "frases simpáticas SEM atender ao pedido (nem sob pretexto de "
             "trabalho)."
         )
+
+    # No FIM para não invalidar o prefixo cacheável (prompt + identidade) a
+    # cada mudança de período; muda no máximo 3x/dia.
+    partes.append(
+        "\n# Contexto da sessão\n"
+        f"- Período do dia agora (horário de Brasília): {_periodo_do_dia()}."
+    )
     return SystemMessage(content="\n".join(partes))
 
 

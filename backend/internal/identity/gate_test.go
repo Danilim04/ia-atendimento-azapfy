@@ -287,3 +287,30 @@ func TestGateLoginInativoRoteiaHumano(t *testing.T) {
 		t.Fatalf("login sem empresa ativa: esperava rotear humano, veio %q", r.Acao)
 	}
 }
+
+// Persona "Azapfy Suporte": a saudação de abertura acompanha o período do dia
+// em Brasília — e à noite NÃO existe "boníssima noite".
+func TestSaudacaoAbertura(t *testing.T) {
+	loc, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		t.Skipf("sem tzdata no host: %v", err)
+	}
+	casos := []struct {
+		hora int
+		quer string
+	}{
+		{7, "Boníssimo dia"},
+		{11, "Boníssimo dia"},
+		{12, "Boníssima tarde"},
+		{17, "Boníssima tarde"},
+		{18, "Boa noite"},
+		{23, "Boa noite"},
+		{3, "Boa noite"},
+	}
+	for _, c := range casos {
+		agora := time.Date(2026, 8, 28, c.hora, 30, 0, 0, loc)
+		if got := saudacaoAbertura(agora); got != c.quer {
+			t.Errorf("hora %dh: esperava %q, veio %q", c.hora, c.quer, got)
+		}
+	}
+}

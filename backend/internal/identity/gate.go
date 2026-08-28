@@ -65,17 +65,42 @@ type gateData struct {
 // Trocar aqui muda o nome em todas as mensagens.
 const nomeAssistente = "Zapin"
 
-// Mensagens do gate — tom acolhedor em PT-BR neutro (decisão pós-Conversa 34:
-// sotaque removido; manter alinhado com a persona em agente-ia/src/agent/prompts.py).
+// Mensagens do gate — persona "Azapfy Suporte" (extraída dos atendimentos
+// reais): "Boníssimo dia" + 🧡, "por gentileza", "aqui" = do nosso lado.
+// Manter alinhado com a persona em agente-ia/src/agent/prompts.py; emojis
+// permitidos: 🧡 ✨ 😉 😊 👍 🙏 (máx. um por mensagem, nunca emoji de riso).
 const (
-	msgPedirLogin            = "Olá! Eu sou o " + nomeAssistente + ", atendente virtual da Azapfy. 😊 Para eu te atender direitinho, me informa o seu login no sistema, por favor?"
-	msgLoginNaoEncontrado    = "Hmm, não encontrei esse login aqui. Pode conferir o dado e me enviar de novo? 🙏"
-	msgFalhaLogin            = "Não consegui localizar o seu login. Vou te encaminhar para um atendente da equipe continuar o atendimento, tudo bem? 🤝"
-	msgSemAcesso             = "Parece que o seu acesso está inativo no sistema. Vou te encaminhar para um atendente resolver isso com você. 🤝"
-	msgErroTemporario        = "Tive um problema no sistema e não consegui consultar agora. Pode tentar de novo em instantes, por favor? 🙏"
-	msgConfirmacaoNaoConfere = "Esse dado não bateu com o que tenho no cadastro. Pode conferir e me enviar de novo?"
-	msgFalhaConfirmacao      = "Não consegui confirmar a sua identidade, mas fica tranquilo: vou te transferir para um atendente da equipe. 🤝"
+	msgLoginNaoEncontrado    = "Hmm, não encontrei esse login aqui. Consegue conferir o dado e me enviar de novo, por gentileza? 🙏"
+	msgFalhaLogin            = "Não consegui localizar o seu login aqui. Vou te encaminhar para um atendente da equipe continuar o atendimento, tudo bem? 🙏"
+	msgSemAcesso             = "Verifiquei aqui e o seu acesso está inativo no sistema. Vou te encaminhar para um atendente da equipe resolver isso com você, tudo bem? 🙏"
+	msgErroTemporario        = "Opa, tive um problema aqui no sistema e não consegui consultar agora. Consegue tentar de novo em instantes, por gentileza? 🙏"
+	msgConfirmacaoNaoConfere = "Esse dado não bateu com o que tenho aqui no cadastro. Consegue conferir e me enviar de novo, por gentileza?"
+	msgFalhaConfirmacao      = "Não consegui confirmar a sua identidade por aqui, mas fica tranquilo: vou te transferir para um atendente da equipe continuar com você. 🙏"
 )
+
+// saudacaoAbertura devolve a saudação da casa conforme o período do dia em
+// Brasília: "Boníssimo dia" / "Boníssima tarde" / "Boa noite" (não existe
+// "boníssima noite" no repertório). O cérebro Python tem o equivalente em
+// `_periodo_do_dia` (nodes.py) — manter os cortes de horário alinhados.
+func saudacaoAbertura(agora time.Time) string {
+	if loc, err := time.LoadLocation("America/Sao_Paulo"); err == nil {
+		agora = agora.In(loc)
+	}
+	switch h := agora.Hour(); {
+	case h >= 5 && h < 12:
+		return "Boníssimo dia"
+	case h >= 12 && h < 18:
+		return "Boníssima tarde"
+	default:
+		return "Boa noite"
+	}
+}
+
+// msgPedirLogin é função (não const) porque a saudação depende do horário.
+func msgPedirLogin() string {
+	return saudacaoAbertura(time.Now()) + "! Tudo bem por aí? 🧡 Eu sou o " + nomeAssistente +
+		", atendente virtual do Suporte Azapfy. Para eu te atender direitinho, me passa o seu login no sistema, por gentileza?"
+}
 
 // Gate resolve a identidade por conversa.
 type Gate struct {
@@ -177,12 +202,12 @@ func (g *Gate) cacheHit(ctx context.Context, phone string) *mongo.Perfil {
 
 func (g *Gate) iniciar(ctx context.Context, convID int64, phone string) Resultado {
 	g.salvarGate(ctx, convID, store.GateAguardLogin, gateData{})
-	return Resultado{Acao: AcaoPerguntar, Reply: msgPedirLogin}
+	return Resultado{Acao: AcaoPerguntar, Reply: msgPedirLogin()}
 }
 
 func (g *Gate) tratarLogin(ctx context.Context, convID int64, phone, mensagem string, gd gateData) Resultado {
 	if strings.TrimSpace(mensagem) == "" {
-		return Resultado{Acao: AcaoPerguntar, Reply: msgPedirLogin}
+		return Resultado{Acao: AcaoPerguntar, Reply: msgPedirLogin()}
 	}
 
 	doc, login, found, err := g.resolverLogin(ctx, convID, mensagem)
@@ -258,9 +283,9 @@ func (g *Gate) identificar(ctx context.Context, convID int64, phone string, perf
 // alvoConfirmacao devolve o valor esperado e a pergunta, conforme ConfirmField.
 func (g *Gate) alvoConfirmacao(doc mongo.UsuarioDoc) (valor, pergunta string) {
 	if g.confirmField == "nome" {
-		return doc.Nome, "Para confirmar que é você mesmo, me diz o seu nome completo do cadastro, por favor?"
+		return doc.Nome, "Para confirmar que é você mesmo, me confirma o seu nome completo do cadastro, por gentileza?"
 	}
-	return doc.Email, "Só para confirmar que é você: qual é o e-mail cadastrado na sua conta?"
+	return doc.Email, "Só para confirmar que é você mesmo: consegue me confirmar o e-mail cadastrado na sua conta, por gentileza?"
 }
 
 func (g *Gate) salvarGate(ctx context.Context, convID int64, state string, gd gateData) {
@@ -430,13 +455,14 @@ func soDigitos(s string) string {
 	return b.String()
 }
 
+// saudacao é a resposta pós-confirmação de identidade. A saudação de abertura
+// ("Boníssimo dia..." + apresentação) já aconteceu em msgPedirLogin — a persona
+// não repete saudação na mesma conversa, então aqui é só o fechamento do gate.
 func saudacao(p *mongo.Perfil) string {
 	if p != nil && p.Nome != "" {
-		return "Que bom te ver por aqui, " + primeiroNome(p.Nome) + "! 😊 Eu sou o " +
-			nomeAssistente + ", atendente virtual da Azapfy. Como posso te ajudar hoje?"
+		return "Maravilha, " + primeiroNome(p.Nome) + "! Tudo certo por aqui 🧡 Me conta: como posso te ajudar hoje?"
 	}
-	return "Que bom te ver por aqui! 😊 Eu sou o " + nomeAssistente +
-		", atendente virtual da Azapfy. Como posso te ajudar hoje?"
+	return "Maravilha! Tudo certo por aqui 🧡 Me conta: como posso te ajudar hoje?"
 }
 
 // primeiroNome devolve só o primeiro nome — mais caloroso que o nome completo.

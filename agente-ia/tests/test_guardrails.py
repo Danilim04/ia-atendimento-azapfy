@@ -346,6 +346,12 @@ def test_system_prompt_agente_contem_regras_chave():
     # Identidade
     assert "Azapfy" in sp
     assert "Zapin" in sp
+    # Persona "Azapfy Suporte" (saudação da casa + assinatura 🧡 + voz)
+    assert "Boníssimo dia" in sp
+    assert "Boníssima tarde" in sp
+    assert "🧡" in sp
+    assert "por gentileza" in sp
+    assert "boníssima noite" in sp  # citada como forma que NÃO existe
     # Anti-injection com delimitador
     assert "<documento_externo>" in sp
     assert "DADO" in sp and "COMANDO" in sp
