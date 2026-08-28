@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"bot-azapfy/internal/mongo"
 	"bot-azapfy/internal/sac"
@@ -53,11 +54,20 @@ func New(st store.Store, sacClient SACClient, token string, log *slog.Logger) *H
 // Register registra as rotas no mux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/tools/sac/tipos", h.auth(h.handleTipos))
+	mux.HandleFunc("/tools/sac/preparar", h.auth(h.handlePreparar))
 	mux.HandleFunc("/tools/sac/criar", h.auth(h.handleCriar))
 	mux.HandleFunc("/tools/sac/listar", h.auth(h.handleListar))
 }
 
 var prioridadesValidas = map[string]bool{"BAIXA": true, "MEDIA": true, "ALTA": true, "URGENTE": true}
+
+// Tetos do conteúdo gerado pelo LLM em /criar — o SAC não impõe limite, nós
+// impomos aqui (input não-confiável nunca chega cru no sistema de chamados).
+const (
+	resumoMax    = 200  // título de 1 linha
+	descricaoMax = 4000 // corpo do incidente
+	corpoMax     = 64 << 10
+)
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -83,21 +93,25 @@ func (h *Handler) handleTipos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = perfil
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":      true,
+		"categorias":  cfg.Categorias,
+		"ocorrencias": opcoesOcorrencias(cfg),
+	})
+}
+
+func opcoesOcorrencias(cfg sac.Config) []map[string]any {
 	tipos := cfg.TiposValidos()
-	ocorrencias := make([]map[string]any, 0, len(tipos))
+	out := make([]map[string]any, 0, len(tipos))
 	for _, t := range tipos {
-		ocorrencias = append(ocorrencias, map[string]any{
+		out = append(out, map[string]any{
 			"categoria":  t.Categoria,
 			"ocorrencia": t.Nome,
 			"descricao":  t.Descricao,
 			"prazo":      t.Prazo,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":      true,
-		"categorias":  cfg.Categorias,
-		"ocorrencias": ocorrencias,
-	})
+	return out
 }
 
 type reqCriar struct {
@@ -110,18 +124,48 @@ type reqCriar struct {
 	Descricao  string `json:"descricao"`
 }
 
-func (h *Handler) handleCriar(w http.ResponseWriter, r *http.Request) {
+// pedidoValidado é o resultado da análise campo a campo de um pedido de
+// abertura: conteúdo sanitizado, empresa resolvida contra o perfil e
+// classificação autoritativa da config do SAC.
+type pedidoValidado struct {
+	telefone     string
+	resumo       string
+	descricao    string
+	clienteGrupo string
+	prioridade   string
+	tipo         sac.Tipo
+	perfil       *mongo.Perfil
+}
+
+// validarCriar decodifica e analisa CADA campo do pedido, sem confiar no
+// input (que vem do LLM). É o caminho único de /preparar (dry-run) e /criar —
+// o que o dry-run aprovou é exatamente o que a abertura aceita. Em recusa,
+// escreve a resposta (com a lista de opções quando a classificação não casa,
+// para o agente corrigir no próprio loop) e devolve ok=false.
+func (h *Handler) validarCriar(w http.ResponseWriter, r *http.Request) (*pedidoValidado, bool) {
 	var req reqCriar
 	if !decode(w, r, &req) {
-		return
+		return nil, false
 	}
-	perfil, ok := h.resolver(w, r.Context(), req.Telefone)
+	telefone := strings.TrimSpace(req.Telefone)
+	perfil, ok := h.resolver(w, r.Context(), telefone)
 	if !ok {
-		return
+		return nil, false
 	}
-	if strings.TrimSpace(req.Resumo) == "" || strings.TrimSpace(req.Descricao) == "" {
-		writeJSON(w, http.StatusOK, map[string]any{"status": false, "erro": "resumo e descricao são obrigatórios"})
-		return
+	// Conteúdo do LLM é analisado campo a campo, nunca repassado cru: controle
+	// fora, resumo vira 1 linha, e texto que sobrevive à limpeza é obrigatório.
+	resumo, resumoTruncado := sanitizarTexto(req.Resumo, resumoMax, true)
+	descricao, descTruncada := sanitizarTexto(req.Descricao, descricaoMax, false)
+	if resumo == "" || descricao == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": false, "erro": "resumo e descricao são obrigatórios (texto real, não só espaços)",
+			"motivo": "campo_invalido",
+		})
+		return nil, false
+	}
+	if resumoTruncado || descTruncada {
+		h.log.Warn("toolsapi criar: conteúdo truncado no teto",
+			"resumo_truncado", resumoTruncado, "descricao_truncada", descTruncada)
 	}
 	clienteGrupo, ok := escolherGrupo(perfil, req.GrupoEmp)
 	if !ok {
@@ -129,36 +173,75 @@ func (h *Handler) handleCriar(w http.ResponseWriter, r *http.Request) {
 			"status": false, "erro": "informe a empresa do chamado", "motivo": "empresa_ambigua",
 			"empresas": gruposDe(perfil),
 		})
-		return
+		return nil, false
 	}
 
 	cfg, err := h.sac.BuscarConfig(r.Context(), h.sac.GrupoEmp())
 	if err != nil {
 		h.log.Error("toolsapi criar: buscarConfig", "err", err)
 		writeJSON(w, http.StatusOK, map[string]any{"status": false, "erro": "não consegui validar a categoria agora"})
-		return
+		return nil, false
 	}
 	tipo, achou := cfg.AcharTipo(req.Categoria, req.Ocorrencia)
 	if !achou {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status": false, "erro": "categoria/ocorrência inválida — consulte as opções disponíveis",
-			"motivo": "ocorrencia_invalida",
+			"status": false, "erro": "categoria/ocorrência inválida — escolha uma das opções em `ocorrencias`",
+			"motivo": "ocorrencia_invalida", "ocorrencias": opcoesOcorrencias(cfg),
 		})
-		return
+		return nil, false
 	}
 
 	prioridade := normalizarPrioridade(req.Prioridade)
+	if proposta := strings.ToUpper(strings.TrimSpace(req.Prioridade)); proposta != "" && proposta != prioridade {
+		h.log.Warn("toolsapi criar: prioridade inválida normalizada",
+			"proposta", req.Prioridade, "usada", prioridade)
+	}
+	return &pedidoValidado{
+		telefone: telefone, resumo: resumo, descricao: descricao,
+		clienteGrupo: clienteGrupo, prioridade: prioridade, tipo: tipo, perfil: perfil,
+	}, true
+}
+
+// handlePreparar é o dry-run da abertura: valida tudo que /criar validaria e
+// devolve a proposta canônica SEM criar nada. O cérebro guarda essa proposta
+// no estado da conversa e a abertura (pós-confirmação do cliente) executa
+// exatamente ela.
+func (h *Handler) handlePreparar(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.validarCriar(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": true,
+		"proposta": map[string]any{
+			"resumo":     p.resumo,
+			"descricao":  p.descricao,
+			"categoria":  p.tipo.Categoria,
+			"ocorrencia": p.tipo.Nome,
+			"prioridade": p.prioridade,
+			"empresa":    p.clienteGrupo,
+			"prazo":      p.tipo.Prazo,
+		},
+	})
+}
+
+func (h *Handler) handleCriar(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.validarCriar(w, r)
+	if !ok {
+		return
+	}
+	perfil, tipo, prioridade := p.perfil, p.tipo, p.prioridade
 	proto, err := h.sac.Criar(r.Context(), sac.NovoChamado{
 		NomeRelator:  perfil.Nome,
 		Email:        perfil.Email,
-		Telefone:     req.Telefone,
-		ClienteGrupo: clienteGrupo,
+		Telefone:     p.telefone,
+		ClienteGrupo: p.clienteGrupo,
 		Categoria:    tipo.Categoria, // autoritativo (da config)
 		Ocorrencia:   tipo.Nome,
 		Item:         tipo.Item,
 		Prazo:        tipo.Prazo,
-		Resumo:       req.Resumo,
-		Descricao:    req.Descricao,
+		Resumo:       p.resumo,
+		Descricao:    p.descricao,
 	})
 	if err != nil {
 		h.log.Error("toolsapi criar: sac.Criar", "err", err)
@@ -287,6 +370,40 @@ func gruposDe(p *mongo.Perfil) []string {
 	return out
 }
 
+// sanitizarTexto limpa texto vindo do LLM antes de entrar no SAC: caracteres
+// de controle viram espaço (\n e \t sobrevivem quando multilinha), texto de
+// 1 linha tem os espaços colapsados, e o resultado é trimado e cortado em
+// `max` runas. Devolve também se houve truncamento (para log).
+func sanitizarTexto(s string, max int, umaLinha bool) (string, bool) {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\t':
+			if umaLinha {
+				b.WriteRune(' ')
+			} else {
+				b.WriteRune(r)
+			}
+		case unicode.IsControl(r):
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if umaLinha {
+		out = strings.Join(strings.Fields(out), " ")
+	} else {
+		out = strings.TrimSpace(out)
+	}
+	runas := []rune(out)
+	if len(runas) <= max {
+		return out, false
+	}
+	return strings.TrimSpace(string(runas[:max])), true
+}
+
 func normalizarPrioridade(p string) string {
 	p = strings.ToUpper(strings.TrimSpace(p))
 	if prioridadesValidas[p] {
@@ -311,8 +428,10 @@ func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	// Input não-confiável não dita o tamanho: corpo além do teto é recusado.
+	r.Body = http.MaxBytesReader(w, r.Body, corpoMax)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"status": false, "erro": "json inválido"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"status": false, "erro": "json inválido ou grande demais"})
 		return false
 	}
 	return true

@@ -18,6 +18,12 @@ para a resposta atual.
 `rag_contexto` é o bloco `<documento_externo>` montado pelo nó `retrieve`
 (retrieval-first): vive APENAS no system prompt do turno atual — nunca entra
 em `messages`, então não incha o histórico persistido.
+
+`proposta_chamado` é a proposta de abertura VALIDADA pelo dry-run do gateway
+(`/tools/sac/preparar`): persiste entre turnos (a confirmação do cliente vem
+no turno seguinte) até ser consumida por uma abertura bem-sucedida ou
+substituída por um novo preparo. `abrir_chamado_suporte` executa EXATAMENTE
+esta proposta — o modelo não redigita nada entre a confirmação e a execução.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ class AgentState(TypedDict):
 
     telefone: NotRequired[str]
     identidade: NotRequired[dict[str, Any] | None]
+    proposta_chamado: NotRequired[dict[str, Any] | None]
     seguranca: NotRequired[dict[str, Any] | None]
     tentou_rag: NotRequired[bool]
     fontes_usadas: NotRequired[list[str]]

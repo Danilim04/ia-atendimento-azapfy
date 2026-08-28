@@ -89,9 +89,10 @@ do estado e validados pela política (`tool_policy.py`); trabalho determinístic
 
 - **`src/agent/`** — o agente:
   - `state.py`: `AgentState` (TypedDict). `messages` usa o reducer
-    `add_messages` (acrescenta; mesmo `id` substitui). `telefone`/`identidade`
-    persistem entre turnos; `seguranca`/`tentou_rag`/`fontes_usadas`/
-    `rag_contexto`/`iteracoes_agente` são resetados por turno em `entry_node`.
+    `add_messages` (acrescenta; mesmo `id` substitui). `telefone`/`identidade`/
+    `proposta_chamado` persistem entre turnos; `seguranca`/`tentou_rag`/
+    `fontes_usadas`/`rag_contexto`/`iteracoes_agente` são resetados por turno
+    em `entry_node`.
   - `nodes.py`: nós como **fábricas com injeção de dependência**
     (`make_agent_node(llm, tools)`, `make_retrieve_node(buscar_chunks)`,
     `make_tools_node(tools)`) — facilita testar sem rede. `retrieve` roda o RAG
@@ -120,8 +121,12 @@ do estado e validados pela política (`tool_policy.py`); trabalho determinístic
 - **`src/tools/`** — `crm_mocks.py` (`rastrear_nota_fiscal` com escopo
   `grupos_emp_sessao` **injetado** — o LLM só vê `numero_nota`; os demais mocks
   de CRM são legado, fora da lista canônica), `sac_tools.py` (chamados reais
-  via gateway Go; `telefone` injetado), `rag_tool.py` (`buscar_chunks()` para o
-  nó `retrieve`; a tool homônima é só compat) e `identidade_mock.py`.
+  via gateway Go; `telefone` injetado; abertura em **duas fases**:
+  `preparar_abertura_chamado` é dry-run no gateway — a proposta aprovada vira
+  `proposta_chamado` no estado — e `abrir_chamado_suporte` executa EXATAMENTE
+  essa proposta, sem nenhum argumento do modelo), `rag_tool.py`
+  (`buscar_chunks()` para o nó `retrieve`; a tool homônima é só compat) e
+  `identidade_mock.py`.
   `get_default_tools()` em `graph.py` é a lista canônica — **a base de
   conhecimento não é mais tool** (retrieval é etapa fixa do grafo). **Não há
   tool de busca web** — o agente não acessa a internet.
@@ -259,8 +264,12 @@ de chave nem de rede. `LANGFUSE_HOST` default é o cloud EU
 - **A política de RAG é retrieval-first**: não reintroduza a base de
   conhecimento como tool do agente — o nó `retrieve` existe justamente para o
   modelo não decidir "se" consulta (F4).
-- **`abrir_novo_chamado` tem efeito colateral** (LLM08): exige confirmação
-  explícita do usuário antes da chamada. Os mocks de CRM guardam estado em
+- **Abrir chamado tem efeito colateral** (LLM08) e é **duas fases por
+  construção**: `preparar_abertura_chamado` (dry-run `/tools/sac/preparar`,
+  onde o gateway analisa campo a campo) → confirmação explícita do cliente →
+  `abrir_chamado_suporte` (a política `exigir` recusa abrir sem proposta
+  preparada no estado; a proposta é injetada — não reintroduza argumentos de
+  conteúdo no schema do `abrir`). Os mocks de CRM legados guardam estado em
   dicts no módulo; o `conftest.py` faz snapshot/restore entre testes.
 - **Política de tools**: RAG (`consultar_base_conhecimento`) é a fonte externa
   primária e única. O agente **não acessa a internet**; se a base não cobrir o

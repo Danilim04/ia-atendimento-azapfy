@@ -28,14 +28,22 @@ from typing import Any, Callable, Mapping, Optional
 
 Resolver = Callable[[Mapping[str, Any]], Any]
 Validador = Callable[[Any, Mapping[str, Any]], Optional[str]]
+Precondicao = Callable[[Mapping[str, Any]], Optional[str]]
 
 
 @dataclass(frozen=True)
 class PoliticaTool:
-    """Política de uma tool: o que injetar da sessão e o que validar do LLM."""
+    """Política de uma tool: o que injetar da sessão e o que validar do LLM.
+
+    ``exigir`` é uma precondição de SESSÃO (não de argumento): se devolver um
+    erro, a tool não executa — independente do que o modelo mandou. É o que
+    torna o fluxo em duas fases determinístico (ex.: abrir chamado exige
+    proposta preparada no estado).
+    """
 
     injetar: dict[str, Resolver] = field(default_factory=dict)
     validar: dict[str, Validador] = field(default_factory=dict)
+    exigir: Optional[Precondicao] = None
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +53,11 @@ class PoliticaTool:
 
 def _telefone_da_sessao(state: Mapping[str, Any]) -> str:
     return state.get("telefone") or ""
+
+
+def _proposta_da_sessao(state: Mapping[str, Any]) -> Optional[dict]:
+    """Proposta de chamado validada pelo dry-run do gateway (estado do grafo)."""
+    return state.get("proposta_chamado") or None
 
 
 def grupos_da_sessao(state: Mapping[str, Any]) -> list[str]:
@@ -87,6 +100,16 @@ def _validar_empresa_da_sessao(
     )
 
 
+def _exigir_proposta_preparada(state: Mapping[str, Any]) -> Optional[str]:
+    """Abrir chamado sem dry-run aprovado não é representável (duas fases)."""
+    if _proposta_da_sessao(state):
+        return None
+    return (
+        "não há proposta de chamado preparada — chame preparar_abertura_chamado, "
+        "apresente o resumo ao cliente e só abra após a confirmação dele"
+    )
+
+
 # ---------------------------------------------------------------------------
 # A política em si — uma linha por tool exposta ao agente
 # ---------------------------------------------------------------------------
@@ -99,9 +122,19 @@ POLITICAS: dict[str, PoliticaTool] = {
     "listar_chamados_abertos": PoliticaTool(
         injetar={"telefone": _telefone_da_sessao},
     ),
-    "abrir_chamado_suporte": PoliticaTool(
+    # Duas fases (dry-run → confirmação → execução): `preparar` valida os
+    # campos no gateway e a proposta aprovada fica no estado; `abrir` não
+    # recebe NADA do modelo — executa exatamente a proposta preparada.
+    "preparar_abertura_chamado": PoliticaTool(
         injetar={"telefone": _telefone_da_sessao},
         validar={"empresa": _validar_empresa_da_sessao},
+    ),
+    "abrir_chamado_suporte": PoliticaTool(
+        injetar={
+            "telefone": _telefone_da_sessao,
+            "proposta": _proposta_da_sessao,
+        },
+        exigir=_exigir_proposta_preparada,
     ),
     # Rastreio de NF (mock, futura MCP): escopo = grupos da sessão, injetado.
     "rastrear_nota_fiscal": PoliticaTool(
@@ -124,6 +157,11 @@ def aplicar_politica(
     final = dict(args)
     if politica is None:
         return final, None
+
+    if politica.exigir is not None:
+        erro = politica.exigir(state)
+        if erro:
+            return final, erro
 
     for arg, validador in politica.validar.items():
         if arg in final:

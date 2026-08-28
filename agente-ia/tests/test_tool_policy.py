@@ -60,10 +60,10 @@ def test_injecao_sobrescreve_arg_alucinado_pelo_llm():
     assert args["grupos_emp_sessao"] == ["AZAPERS"]
 
 
-def test_abrir_chamado_empresa_da_sessao_passa():
+def test_preparar_chamado_empresa_da_sessao_passa():
     state = {"identidade": _IDENTIDADE_AZAPERS}
     args, erro = aplicar_politica(
-        "abrir_chamado_suporte",
+        "preparar_abertura_chamado",
         {"resumo": "x", "empresa": "azapers"},
         state,
     )
@@ -71,16 +71,43 @@ def test_abrir_chamado_empresa_da_sessao_passa():
     assert args["telefone"] == ""  # injetado (sessão sem telefone)
 
 
-def test_abrir_chamado_empresa_alheia_e_recusada():
+def test_preparar_chamado_empresa_alheia_e_recusada():
     """F9/B4: chamado 'em nome de' empresa fora da sessão não executa."""
     state = {"identidade": _IDENTIDADE_AZAPERS}
     _, erro = aplicar_politica(
-        "abrir_chamado_suporte",
+        "preparar_abertura_chamado",
         {"resumo": "x", "empresa": "TRANSPORTADORA XPTO LTDA"},
         state,
     )
     assert erro is not None
     assert "escopo" in erro
+
+
+def test_abrir_sem_proposta_preparada_e_recusado():
+    """Duas fases: abrir sem dry-run aprovado no estado não é representável."""
+    state = {"identidade": _IDENTIDADE_AZAPERS}
+    _, erro = aplicar_politica("abrir_chamado_suporte", {}, state)
+    assert erro is not None
+    assert "preparar_abertura_chamado" in erro
+
+
+def test_abrir_injeta_a_proposta_do_estado():
+    """A abertura executa a proposta preparada — mesmo que o modelo tente
+    passar outro conteúdo, a injeção sobrescreve."""
+    proposta = {"resumo": "App travando", "categoria": "APLICATIVO"}
+    state = {
+        "identidade": _IDENTIDADE_AZAPERS,
+        "telefone": "5531999990000",
+        "proposta_chamado": proposta,
+    }
+    args, erro = aplicar_politica(
+        "abrir_chamado_suporte",
+        {"proposta": {"resumo": "OUTRA COISA alucinada"}},
+        state,
+    )
+    assert erro is None
+    assert args["proposta"] == proposta
+    assert args["telefone"] == "5531999990000"
 
 
 def test_tool_sem_politica_passa_intocada():
@@ -123,15 +150,15 @@ def test_idor_do_laudo_nao_e_mais_representavel():
 
 
 def test_tools_node_recusa_da_politica_vira_toolmessage():
-    from src.tools.sac_tools import abrir_chamado_suporte
+    from src.tools.sac_tools import preparar_abertura_chamado
 
-    node = make_tools_node([abrir_chamado_suporte])
+    node = make_tools_node([preparar_abertura_chamado])
     ai = AIMessage(
         content="",
         tool_calls=[
             {
                 "id": "tc1",
-                "name": "abrir_chamado_suporte",
+                "name": "preparar_abertura_chamado",
                 "args": {
                     "resumo": "x",
                     "descricao": "y",

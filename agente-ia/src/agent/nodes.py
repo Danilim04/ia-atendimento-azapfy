@@ -54,6 +54,10 @@ from src.security.output_guardrails import (
 
 logger = logging.getLogger(__name__)
 
+# Sentinela de "campo não mudou neste turno" — distingue "limpar a proposta"
+# (None) de "não mexer nela" ao montar o update do tools_node.
+_SEM_MUDANCA = object()
+
 
 # ---------------------------------------------------------------------------
 # Entry — reseta os campos por-turno (telefone/cliente persistem)
@@ -492,6 +496,9 @@ def make_tools_node(tools: list[BaseTool]) -> Callable[[AgentState], dict]:
         tool_messages: list[ToolMessage] = []
         tentou_rag = state.get("tentou_rag", False)
         fontes_usadas = list(state.get("fontes_usadas") or [])
+        # Sentinela: só escrevemos `proposta_chamado` no estado quando o turno
+        # realmente preparou (guarda) ou abriu (consome) uma proposta.
+        proposta_chamado: Any = _SEM_MUDANCA
 
         for tc in tool_calls:
             nome = tc.get("name") or "desconhecida"
@@ -533,6 +540,15 @@ def make_tools_node(tools: list[BaseTool]) -> Callable[[AgentState], dict]:
                     )
                 }
 
+            # Fluxo em duas fases do chamado: o dry-run aprovado vira estado
+            # (é ELE que a abertura executa); a abertura bem-sucedida o consome.
+            if nome == "preparar_abertura_chamado" and isinstance(resultado, dict):
+                if resultado.get("status") and resultado.get("proposta"):
+                    proposta_chamado = dict(resultado["proposta"])
+            elif nome == "abrir_chamado_suporte" and isinstance(resultado, dict):
+                if resultado.get("status"):
+                    proposta_chamado = None
+
             if nome == "consultar_base_conhecimento":
                 tentou_rag = True
                 if isinstance(resultado, dict) and resultado.get("encontrado"):
@@ -553,11 +569,14 @@ def make_tools_node(tools: list[BaseTool]) -> Callable[[AgentState], dict]:
                 ToolMessage(content=content, tool_call_id=tool_call_id, name=nome)
             )
 
-        return {
+        update: dict[str, Any] = {
             "messages": tool_messages,
             "tentou_rag": tentou_rag,
             "fontes_usadas": fontes_usadas,
         }
+        if proposta_chamado is not _SEM_MUDANCA:
+            update["proposta_chamado"] = proposta_chamado
+        return update
 
     return tools_node
 

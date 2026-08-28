@@ -211,6 +211,129 @@ func TestTiposListaOcorrencias(t *testing.T) {
 	}
 }
 
+func TestPrepararDevolveCanonicoSemCriar(t *testing.T) {
+	f := &fakeSAC{cfg: cfgPadrao()}
+	h := novoHandler(t, f, true)
+	_, out := do(t, h, "/tools/sac/preparar", tokenTeste, map[string]any{
+		"telefone": "5531983857490", "categoria": "aplicativo",
+		"ocorrencia": "lentidão ou travamentos", "prioridade": "alta",
+		"resumo": "App\ntravando", "descricao": "Trava ao bipar nota",
+	})
+	if out["status"] != true {
+		t.Fatalf("esperava status true: %+v", out)
+	}
+	proposta, _ := out["proposta"].(map[string]any)
+	if proposta == nil {
+		t.Fatalf("esperava proposta no dry-run: %+v", out)
+	}
+	// Valores canônicos: classificação da config, prioridade normalizada,
+	// resumo sanitizado (1 linha) — é isso que o agente apresenta ao cliente.
+	if proposta["categoria"] != "APLICATIVO" || proposta["ocorrencia"] != "LENTIDÃO OU TRAVAMENTOS" {
+		t.Fatalf("classificação não canônica: %+v", proposta)
+	}
+	if proposta["prioridade"] != "ALTA" || proposta["resumo"] != "App travando" {
+		t.Fatalf("prioridade/resumo não normalizados: %+v", proposta)
+	}
+	if proposta["empresa"] != "AZAPERS" {
+		t.Fatalf("empresa não resolvida do perfil: %+v", proposta)
+	}
+	// Dry-run de verdade: nada foi criado nem priorizado.
+	if len(f.criados) != 0 || len(f.prioridades) != 0 {
+		t.Fatalf("preparar não pode criar chamado: criados=%d", len(f.criados))
+	}
+}
+
+func TestPrepararOcorrenciaInvalidaTrazOpcoes(t *testing.T) {
+	f := &fakeSAC{cfg: cfgPadrao()}
+	h := novoHandler(t, f, true)
+	_, out := do(t, h, "/tools/sac/preparar", tokenTeste, map[string]any{
+		"telefone": "5531983857490", "categoria": "APLICATIVO",
+		"ocorrencia": "NAO EXISTE", "resumo": "x", "descricao": "y",
+	})
+	if out["status"] != false || out["motivo"] != "ocorrencia_invalida" {
+		t.Fatalf("esperava ocorrencia_invalida: %+v", out)
+	}
+	// A recusa carrega as opções válidas — o agente corrige no próprio loop,
+	// sem voltar ao cliente nem gastar outra chamada de tipos.
+	opcoes, _ := out["ocorrencias"].([]any)
+	if len(opcoes) != 1 {
+		t.Fatalf("esperava a lista de opções na recusa: %+v", out)
+	}
+	if len(f.criados) != 0 {
+		t.Fatalf("não deveria ter criado chamado: %+v", f.criados)
+	}
+}
+
+func TestCriarSanitizaConteudo(t *testing.T) {
+	f := &fakeSAC{cfg: cfgPadrao()}
+	h := novoHandler(t, f, true)
+	_, out := do(t, h, "/tools/sac/criar", tokenTeste, map[string]any{
+		"telefone": "5531983857490", "categoria": "APLICATIVO",
+		"ocorrencia": "LENTIDÃO OU TRAVAMENTOS",
+		"resumo":     "App\ntravando\r\x1b   muito",
+		"descricao":  "Linha 1\r\nLinha 2\x00 fim  ",
+	})
+	if out["status"] != true {
+		t.Fatalf("esperava status true: %+v", out)
+	}
+	if got := f.criados[0].Resumo; got != "App travando muito" {
+		t.Fatalf("resumo não sanitizado: %q", got)
+	}
+	// Descrição preserva \n; \r e controle viram espaço; pontas trimadas.
+	if got := f.criados[0].Descricao; !strings.Contains(got, "Linha 1") ||
+		!strings.Contains(got, "\nLinha 2") || strings.ContainsAny(got, "\r\x00\x1b") {
+		t.Fatalf("descricao não sanitizada: %q", got)
+	}
+}
+
+func TestCriarRecusaConteudoVazioAposLimpeza(t *testing.T) {
+	f := &fakeSAC{cfg: cfgPadrao()}
+	h := novoHandler(t, f, true)
+	_, out := do(t, h, "/tools/sac/criar", tokenTeste, map[string]any{
+		"telefone": "5531983857490", "categoria": "APLICATIVO",
+		"ocorrencia": "LENTIDÃO OU TRAVAMENTOS",
+		"resumo":     " \r\x00\x1b \t ", "descricao": "descrição válida",
+	})
+	if out["status"] != false || out["motivo"] != "campo_invalido" {
+		t.Fatalf("esperava recusa campo_invalido: %+v", out)
+	}
+	if len(f.criados) != 0 {
+		t.Fatalf("não deveria ter criado chamado: %+v", f.criados)
+	}
+}
+
+func TestCriarTruncaNoTeto(t *testing.T) {
+	f := &fakeSAC{cfg: cfgPadrao()}
+	h := novoHandler(t, f, true)
+	_, out := do(t, h, "/tools/sac/criar", tokenTeste, map[string]any{
+		"telefone": "5531983857490", "categoria": "APLICATIVO",
+		"ocorrencia": "LENTIDÃO OU TRAVAMENTOS",
+		"resumo":     strings.Repeat("á", 500), "descricao": "ok",
+	})
+	if out["status"] != true {
+		t.Fatalf("esperava status true: %+v", out)
+	}
+	if n := len([]rune(f.criados[0].Resumo)); n != resumoMax {
+		t.Fatalf("resumo deveria ter %d runas, tem %d", resumoMax, n)
+	}
+}
+
+func TestCriarRecusaCorpoGigante(t *testing.T) {
+	f := &fakeSAC{cfg: cfgPadrao()}
+	h := novoHandler(t, f, true)
+	code, _ := do(t, h, "/tools/sac/criar", tokenTeste, map[string]any{
+		"telefone": "5531983857490", "categoria": "APLICATIVO",
+		"ocorrencia": "LENTIDÃO OU TRAVAMENTOS",
+		"resumo":     "x", "descricao": strings.Repeat("a", corpoMax+1024),
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("esperava 400 para corpo além do teto, veio %d", code)
+	}
+	if len(f.criados) != 0 {
+		t.Fatalf("não deveria ter criado chamado: %+v", f.criados)
+	}
+}
+
 type errSimulado struct{}
 
 func (errSimulado) Error() string { return "falha simulada" }

@@ -1,7 +1,9 @@
 """Testes das tools de chamado (SAC) — sem rede: `httpx.post` é stubado.
 
 Cobrem: payload/headers enviados ao gateway Go, a injeção do `telefone` a partir
-do ESTADO (relator nunca vem do LLM) e o fail-soft em falha de rede.
+do ESTADO (relator nunca vem do LLM), o fluxo em DUAS FASES da abertura
+(preparar guarda a proposta no estado → abrir executa exatamente ela) e o
+fail-soft em falha de rede.
 """
 
 from __future__ import annotations
@@ -16,7 +18,19 @@ from src.tools.sac_tools import (
     abrir_chamado_suporte,
     consultar_tipos_de_chamado,
     listar_chamados_abertos,
+    preparar_abertura_chamado,
 )
+
+
+_PROPOSTA = {
+    "resumo": "App travando",
+    "descricao": "Trava ao bipar",
+    "categoria": "APLICATIVO",
+    "ocorrencia": "LENTIDÃO OU TRAVAMENTOS",
+    "prioridade": "ALTA",
+    "empresa": "AZAPERS",
+    "prazo": 1,
+}
 
 
 class _FakeResp:
@@ -44,7 +58,32 @@ def captura(monkeypatch):
     return chamadas, estado
 
 
-def test_abrir_chamado_envia_payload_e_token(captura):
+def test_preparar_envia_payload_e_token(captura):
+    chamadas, estado = captura
+    estado["resposta"] = {"status": True, "proposta": dict(_PROPOSTA)}
+    out = preparar_abertura_chamado.invoke(
+        {
+            "resumo": "App travando",
+            "descricao": "Trava ao bipar",
+            "categoria": "aplicativo",
+            "ocorrencia": "lentidão ou travamentos",
+            "prioridade": "ALTA",
+            "telefone": "5531983857490",
+        }
+    )
+    assert out["proposta"]["categoria"] == "APLICATIVO"
+    enviado = chamadas[-1]
+    assert enviado["url"].endswith("/tools/sac/preparar")
+    # O header carrega o token das settings — não fixamos o valor para o teste
+    # não depender do `.env` local (era a falha ambiental pré-existente).
+    from src.config import get_settings
+
+    assert enviado["headers"]["X-Tools-Token"] == get_settings().sac_tools_token
+    assert enviado["json"]["telefone"] == "5531983857490"
+
+
+def test_abrir_executa_a_proposta_injetada(captura):
+    """`abrir` não recebe conteúdo do LLM: o payload do /criar É a proposta."""
     chamadas, estado = captura
     estado["resposta"] = {
         "status": True,
@@ -52,56 +91,79 @@ def test_abrir_chamado_envia_payload_e_token(captura):
         "link": "https://atendimento.azapfy.com.br/chat/x/AZAPERS/ZPRS25207690",
     }
     out = abrir_chamado_suporte.invoke(
-        {
-            "resumo": "App travando",
-            "descricao": "Trava ao bipar",
-            "categoria": "APLICATIVO",
-            "ocorrencia": "LENTIDÃO OU TRAVAMENTOS",
-            "prioridade": "ALTA",
-            "telefone": "5531983857490",
-        }
+        {"proposta": dict(_PROPOSTA), "telefone": "5531983857490"}
     )
     assert out["protocolo"] == "ZPRS25207690"
     enviado = chamadas[-1]
     assert enviado["url"].endswith("/tools/sac/criar")
-    # O header carrega o token das settings — não fixamos o valor para o teste
-    # não depender do `.env` local (era a falha ambiental pré-existente).
-    from src.config import get_settings
-
-    assert enviado["headers"]["X-Tools-Token"] == get_settings().sac_tools_token
+    assert enviado["json"]["resumo"] == "App travando"
     assert enviado["json"]["categoria"] == "APLICATIVO"
+    assert enviado["json"]["grupo_emp"] == "AZAPERS"
     assert enviado["json"]["telefone"] == "5531983857490"
 
 
-def test_telefone_vem_do_estado_via_tools_node(captura):
-    """O LLM NÃO passa telefone; o tools_node injeta o da sessão (identidade)."""
+def test_fluxo_duas_fases_no_tools_node(captura):
+    """preparar guarda a proposta no estado; abrir consome exatamente ela."""
     chamadas, estado = captura
-    estado["resposta"] = {"status": True, "protocolo": "ZP1", "link": "http://x/AZAPERS/ZP1"}
     node = make_tools_node(SAC_TOOLS)
+
+    # Fase 1: preparar — o dry-run aprovado vira `proposta_chamado` no estado.
+    estado["resposta"] = {"status": True, "proposta": dict(_PROPOSTA)}
     ai = AIMessage(
         content="",
         tool_calls=[
             {
-                "name": "abrir_chamado_suporte",
+                "name": "preparar_abertura_chamado",
                 "id": "call-1",
                 "args": {
-                    "resumo": "R",
-                    "descricao": "D",
+                    "resumo": "App travando",
+                    "descricao": "Trava ao bipar",
                     "categoria": "APLICATIVO",
                     "ocorrencia": "LENTIDÃO OU TRAVAMENTOS",
-                    "prioridade": "MEDIA",
                 },
             }
         ],
     )
-    out = node({"messages": [ai], "telefone": "5531999990000"})
-
-    # O payload que foi pro Go recebeu o telefone do estado, não do LLM.
+    out1 = node({"messages": [ai], "telefone": "5531999990000"})
+    assert out1["proposta_chamado"] == _PROPOSTA
+    # O telefone do payload veio do ESTADO, não do LLM.
     assert chamadas[-1]["json"]["telefone"] == "5531999990000"
-    # E o resultado da tool virou ToolMessage com o protocolo.
-    tool_msgs = out["messages"]
+
+    # Fase 2: abrir com args VAZIOS — a proposta e o telefone são injetados.
+    estado["resposta"] = {"status": True, "protocolo": "ZP1", "link": "http://x/AZAPERS/ZP1"}
+    ai2 = AIMessage(
+        content="",
+        tool_calls=[{"name": "abrir_chamado_suporte", "id": "call-2", "args": {}}],
+    )
+    out2 = node(
+        {
+            "messages": [ai2],
+            "telefone": "5531999990000",
+            "proposta_chamado": dict(_PROPOSTA),
+        }
+    )
+    assert chamadas[-1]["json"]["resumo"] == "App travando"
+    assert chamadas[-1]["json"]["telefone"] == "5531999990000"
+    # Abertura bem-sucedida CONSOME a proposta (não sobra pra reuso acidental).
+    assert out2["proposta_chamado"] is None
+    tool_msgs = out2["messages"]
     assert tool_msgs and tool_msgs[0].name == "abrir_chamado_suporte"
     assert "ZP1" in tool_msgs[0].content
+
+
+def test_abrir_sem_proposta_preparada_e_recusado(captura):
+    """Sem dry-run aprovado no estado, a abertura nem chega ao gateway."""
+    chamadas, _ = captura
+    node = make_tools_node(SAC_TOOLS)
+    ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "abrir_chamado_suporte", "id": "call-1", "args": {}}],
+    )
+    out = node({"messages": [ai], "telefone": "5531999990000"})
+    content = out["messages"][0].content
+    assert "recusado_pela_politica" in content
+    assert "preparar_abertura_chamado" in content
+    assert not chamadas  # nenhuma chamada HTTP aconteceu
 
 
 def test_listar_e_consultar_tipos_endpoints(captura):
@@ -125,8 +187,13 @@ def test_falha_de_rede_retorna_status_false(monkeypatch):
     assert "erro" in out
 
 
-def test_telefone_fora_do_schema_do_modelo():
-    """`telefone` é InjectedToolArg: não aparece no schema que o LLM preenche."""
-    campos = abrir_chamado_suporte.tool_call_schema.model_fields
-    assert "telefone" not in campos
-    assert "resumo" in campos and "categoria" in campos
+def test_schemas_visiveis_ao_modelo():
+    """Injetados fora do schema: telefone em todas; TUDO em `abrir` (2 fases)."""
+    campos_preparar = preparar_abertura_chamado.tool_call_schema.model_fields
+    assert "telefone" not in campos_preparar
+    assert "resumo" in campos_preparar and "categoria" in campos_preparar
+
+    campos_abrir = abrir_chamado_suporte.tool_call_schema.model_fields
+    assert "telefone" not in campos_abrir
+    assert "proposta" not in campos_abrir
+    assert not campos_abrir  # o modelo não tem NENHUM argumento para abrir

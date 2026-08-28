@@ -1,4 +1,10 @@
-"""Tools reais de chamados (SAC) — abrir, listar e consultar ocorrências.
+"""Tools reais de chamados (SAC) — preparar (dry-run), abrir, listar, tipos.
+
+A abertura é em DUAS FASES (determinístico, sem depender do modelo):
+`preparar_abertura_chamado` valida tudo no gateway sem criar nada e a proposta
+aprovada fica no estado do grafo; após a confirmação do cliente,
+`abrir_chamado_suporte` executa EXATAMENTE essa proposta (injetada via
+`tool_policy` — o modelo não passa argumento nenhum na abertura).
 
 Estas tools **não** falam direto com o SAC: elas chamam o gateway Go
 (`/tools/sac/*`), que resolve a identidade do relator a partir do telefone
@@ -17,7 +23,7 @@ intenção (elas custam tokens e guiam o comportamento).
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Any
+from typing import Annotated, Any, Optional
 
 import httpx
 from langchain_core.tools import InjectedToolArg, tool
@@ -67,7 +73,7 @@ def consultar_tipos_de_chamado(
 
 
 @tool
-def abrir_chamado_suporte(
+def preparar_abertura_chamado(
     resumo: str,
     descricao: str,
     categoria: str,
@@ -76,36 +82,36 @@ def abrir_chamado_suporte(
     empresa: str = "",
     telefone: Annotated[str, InjectedToolArg] = "",
 ) -> dict[str, Any]:
-    """Abre um chamado de suporte no SAC, já preenchido e categorizado.
+    """Valida e prepara a abertura de um chamado (dry-run — NÃO cria nada).
 
-    AÇÃO COM EFEITO COLATERAL (LLM08): cria um chamado real. Só chame DEPOIS de
-    o cliente confirmar explicitamente que quer abrir (ex.: "pode abrir", "sim").
-    O chamado nasce pronto para o atendente: grupo, setor e prazo são definidos
-    pelo gateway; você só fornece o conteúdo e a classificação.
+    Chame ANTES de apresentar o resumo ao cliente: o sistema confere cada campo
+    e devolve em `proposta` os valores canônicos que a abertura vai usar. Se
+    vier motivo "ocorrencia_invalida", a resposta traz a lista `ocorrencias`
+    válidas — escolha a que melhor casa e chame de novo AGORA, sem envolver o
+    cliente. Se vier "empresa_ambigua", pergunte de qual das empresas DO
+    CLIENTE é o chamado e repita passando `empresa`.
 
-    Antes de chamar, escolha `categoria` e `ocorrencia` a partir de
-    `consultar_tipos_de_chamado` (valores fora da lista são recusados com
-    motivo "ocorrencia_invalida" — nesse caso, reconsulte e tente de novo).
+    Com status true, apresente ao cliente o resumo do que será registrado (da
+    `proposta`) e peça confirmação; só então chame `abrir_chamado_suporte`.
 
     Args:
         resumo: título curto do problema (1 linha). Será registrado em MAIÚSCULAS.
         descricao: descrição detalhada do que está acontecendo (preserva a caixa).
-        categoria: categoria válida (de `consultar_tipos_de_chamado`).
-        ocorrencia: ocorrência válida dentro da categoria.
+        categoria: categoria do problema (ex.: de `consultar_tipos_de_chamado`).
+        ocorrencia: ocorrência dentro da categoria.
         prioridade: BAIXA | MEDIA | ALTA | URGENTE (default MEDIA). Use ALTA/
             URGENTE só quando o impacto for claramente alto (operação parada).
         empresa: informe SÓ quando o cliente tiver mais de uma empresa e o
-            gateway pedir para desambiguar (motivo "empresa_ambigua").
+            sistema pedir para desambiguar (motivo "empresa_ambigua").
 
     Returns:
-        dict: status (bool); em sucesso, protocolo, link (URL do chat do
-        chamado) e prioridade. Em falha, erro e às vezes motivo
-        ("ocorrencia_invalida" | "empresa_ambigua" | "nao_identificado").
-        SEMPRE envie o `link` ao cliente e oriente-o a continuar pelo chat do
-        chamado.
+        dict: status (bool); em sucesso, proposta {resumo, descricao, categoria,
+        ocorrencia, prioridade, empresa, prazo}. Em falha, erro e às vezes
+        motivo ("ocorrencia_invalida" com `ocorrencias` | "empresa_ambigua"
+        com `empresas` | "campo_invalido" | "nao_identificado").
     """
     return _post(
-        "/tools/sac/criar",
+        "/tools/sac/preparar",
         {
             "telefone": telefone,
             "resumo": resumo,
@@ -114,6 +120,39 @@ def abrir_chamado_suporte(
             "ocorrencia": ocorrencia,
             "prioridade": prioridade,
             "grupo_emp": empresa,
+        },
+    )
+
+
+@tool
+def abrir_chamado_suporte(
+    proposta: Annotated[Optional[dict], InjectedToolArg] = None,
+    telefone: Annotated[str, InjectedToolArg] = "",
+) -> dict[str, Any]:
+    """Abre o chamado da proposta JÁ PREPARADA e confirmada pelo cliente.
+
+    AÇÃO COM EFEITO COLATERAL (LLM08): cria um chamado real. Só chame DEPOIS de
+    `preparar_abertura_chamado` ter retornado status true E de o cliente
+    confirmar explicitamente (ex.: "pode abrir", "sim"). Não recebe argumentos:
+    o chamado criado é EXATAMENTE a proposta preparada — para mudar qualquer
+    coisa (resumo, prioridade...), prepare de novo antes de abrir.
+
+    Returns:
+        dict: status (bool); em sucesso, protocolo, link (URL do chat do
+        chamado) e prioridade. SEMPRE envie o `link` ao cliente e oriente-o a
+        continuar a conversa pelo chat do chamado.
+    """
+    proposta = proposta or {}
+    return _post(
+        "/tools/sac/criar",
+        {
+            "telefone": telefone,
+            "resumo": proposta.get("resumo", ""),
+            "descricao": proposta.get("descricao", ""),
+            "categoria": proposta.get("categoria", ""),
+            "ocorrencia": proposta.get("ocorrencia", ""),
+            "prioridade": proposta.get("prioridade", "MEDIA"),
+            "grupo_emp": proposta.get("empresa", ""),
         },
     )
 
@@ -138,6 +177,7 @@ def listar_chamados_abertos(
 
 SAC_TOOLS = [
     consultar_tipos_de_chamado,
+    preparar_abertura_chamado,
     abrir_chamado_suporte,
     listar_chamados_abertos,
 ]
