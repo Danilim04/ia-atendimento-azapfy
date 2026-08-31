@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -285,6 +286,132 @@ func TestGateLoginInativoRoteiaHumano(t *testing.T) {
 	r := g.Process(ctx, conv, "5511222220000", "999")
 	if r.Acao != AcaoRotearHumano {
 		t.Fatalf("login sem empresa ativa: esperava rotear humano, veio %q", r.Acao)
+	}
+}
+
+// fakeRepoMutavel conta lookups e permite mudar a base/forçar erro no meio do
+// teste — p/ exercitar a revalidação de identidade com cache vencido.
+type fakeRepoMutavel struct {
+	docs     map[string]mongo.UsuarioDoc
+	err      error
+	chamadas int
+}
+
+func (f *fakeRepoMutavel) BuscarPorLogin(_ context.Context, login string) (mongo.UsuarioDoc, bool, error) {
+	f.chamadas++
+	if f.err != nil {
+		return mongo.UsuarioDoc{}, false, f.err
+	}
+	d, ok := f.docs[login]
+	return d, ok, nil
+}
+
+// identifica roda o fluxo feliz completo (login + confirmação) na conversa.
+func identifica(t *testing.T, g *Gate, conv int64, phone string) {
+	t.Helper()
+	ctx := context.Background()
+	g.Process(ctx, conv, phone, "oi")
+	g.Process(ctx, conv, phone, "10596693664")
+	if r := g.Process(ctx, conv, phone, "daniel.ferraz@azapfy.com.br"); r.Acao != AcaoSaudar {
+		t.Fatalf("setup: esperava saudar ao identificar, veio %q", r.Acao)
+	}
+}
+
+// newGateTTL constrói o gate com TTL de identidade configurável (ttl mínimo
+// simula o cache telefone→perfil vencido numa conversa já identificada).
+func newGateTTL(t *testing.T, repo UserRepo, ttl time.Duration) *Gate {
+	t.Helper()
+	st, err := store.NewSQLite(filepath.Join(t.TempDir(), "gate.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return New(st, repo, "email", 3, ttl, time.Hour, nil, nil)
+}
+
+func TestGateIdentificadoCacheVivoNaoConsultaOrigem(t *testing.T) {
+	// Cache válido → encaminha sem NENHUM lookup extra no Mongo por mensagem.
+	repo := &fakeRepoMutavel{docs: map[string]mongo.UsuarioDoc{"10596693664": docDaniel()}}
+	g := newGateTTL(t, repo, time.Hour)
+	identifica(t, g, 31, "5511999990031")
+	antes := repo.chamadas
+
+	r := g.Process(context.Background(), 31, "5511999990031", "como rastreio a NF 1?")
+	if r.Acao != AcaoEncaminhar || r.Perfil == nil {
+		t.Fatalf("cache vivo: esperava encaminhar com perfil, veio %q perfil=%v", r.Acao, r.Perfil)
+	}
+	if repo.chamadas != antes {
+		t.Fatalf("cache vivo não deveria consultar o Mongo (antes=%d, depois=%d)", antes, repo.chamadas)
+	}
+}
+
+func TestGateIdentificadoCacheVencidoRevalidaNaOrigem(t *testing.T) {
+	// Cenário do bug em produção (conv 37): gate identificado, cache de
+	// identidade vencido → o gate revalida no Mongo pelo login conhecido e
+	// encaminha, sem re-pedir login (o invariante da API de tools volta a valer).
+	repo := &fakeRepoMutavel{docs: map[string]mongo.UsuarioDoc{"10596693664": docDaniel()}}
+	g := newGateTTL(t, repo, time.Nanosecond) // cache nasce vencido
+	identifica(t, g, 32, "5511999990032")
+	antes := repo.chamadas
+
+	r := g.Process(context.Background(), 32, "5511999990032", "consegue abrir um chamado?")
+	if r.Acao != AcaoEncaminhar || r.Perfil == nil {
+		t.Fatalf("cache vencido: esperava encaminhar após revalidar, veio %q perfil=%v", r.Acao, r.Perfil)
+	}
+	if repo.chamadas != antes+1 {
+		t.Fatalf("esperava exatamente 1 lookup de revalidação, veio %d", repo.chamadas-antes)
+	}
+	if len(r.Perfil.Empresas) != 1 || r.Perfil.Empresas[0].GrupoEmpresa != "AZAPERS" {
+		t.Fatalf("perfil revalidado deve vir re-projetado da origem: %+v", r.Perfil.Empresas)
+	}
+}
+
+func TestGateIdentificadoCacheVencidoOrigemFora(t *testing.T) {
+	// Mongo fora durante a revalidação → mesma mensagem de erro temporário do
+	// tratarLogin; o estado NÃO muda e a próxima mensagem tenta de novo.
+	repo := &fakeRepoMutavel{docs: map[string]mongo.UsuarioDoc{"10596693664": docDaniel()}}
+	g := newGateTTL(t, repo, time.Nanosecond)
+	identifica(t, g, 33, "5511999990033")
+
+	repo.err = errors.New("mongo fora")
+	r := g.Process(context.Background(), 33, "5511999990033", "oi?")
+	if r.Acao != AcaoPerguntar || r.Reply != msgErroTemporario {
+		t.Fatalf("origem fora: esperava perguntar com erro temporário, veio %q reply=%q", r.Acao, r.Reply)
+	}
+	// Origem voltou → a mesma conversa encaminha sem re-identificação.
+	repo.err = nil
+	if r := g.Process(context.Background(), 33, "5511999990033", "oi de novo"); r.Acao != AcaoEncaminhar {
+		t.Fatalf("origem de volta: esperava encaminhar, veio %q", r.Acao)
+	}
+}
+
+func TestGateIdentificadoCacheVencidoLoginSumiuReinicia(t *testing.T) {
+	// Usuário removido da base → recomeça a identificação (não segue com
+	// perfil fantasma).
+	repo := &fakeRepoMutavel{docs: map[string]mongo.UsuarioDoc{"10596693664": docDaniel()}}
+	g := newGateTTL(t, repo, time.Nanosecond)
+	identifica(t, g, 34, "5511999990034")
+
+	delete(repo.docs, "10596693664")
+	r := g.Process(context.Background(), 34, "5511999990034", "oi?")
+	if r.Acao != AcaoPerguntar || !strings.Contains(r.Reply, "login") {
+		t.Fatalf("login sumiu: esperava reiniciar pedindo login, veio %q reply=%q", r.Acao, r.Reply)
+	}
+}
+
+func TestGateIdentificadoCacheVencidoAcessoRevogadoRoteiaHumano(t *testing.T) {
+	// Acesso revogado na origem (nenhuma empresa ativa) → mesmo tratamento do
+	// login inativo: rotear humano; é exatamente o propósito do TTL.
+	repo := &fakeRepoMutavel{docs: map[string]mongo.UsuarioDoc{"10596693664": docDaniel()}}
+	g := newGateTTL(t, repo, time.Nanosecond)
+	identifica(t, g, 35, "5511999990035")
+
+	revogado := docDaniel()
+	revogado.Grupos = map[string]mongo.GrupoDoc{"AZAPERS": {Ativo: false}}
+	repo.docs["10596693664"] = revogado
+	r := g.Process(context.Background(), 35, "5511999990035", "oi?")
+	if r.Acao != AcaoRotearHumano || r.Reply != msgSemAcesso {
+		t.Fatalf("acesso revogado: esperava rotear humano, veio %q reply=%q", r.Acao, r.Reply)
 	}
 }
 

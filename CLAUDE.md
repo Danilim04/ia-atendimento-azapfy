@@ -225,6 +225,10 @@ duplicata ou envelope de relay:
 - **Gate**: `GateFalha` expira (`GATE_FALHA_TTL`=1h — F1); confirmação tolera
   texto ao redor do dado (`confereConfirmacao`); login resolve e-mail/CPF
   embutidos em frase deterministicamente antes de cair no extractor de IA (F2).
+  Conversa identificada com o cache `identities` vencido (`IDENTITY_TTL`=24h)
+  é **revalidada na origem** (`revalidar` em `gate.go`): re-lookup no Mongo
+  pelo login conhecido, sem incomodar o cliente — invariante: se o gate
+  encaminhou, a linha em `identities` está viva (a API de tools depende disso).
 - **Saída WhatsApp-native** (`internal/engine/whatsapp.go`): `DividirBolhas`
   (o prompt instrui o agente a separar a resposta em bolhas com uma linha
   `---`; cada bolha vira uma mensagem, com pausa `BOLHA_PAUSA`=1.5s entre

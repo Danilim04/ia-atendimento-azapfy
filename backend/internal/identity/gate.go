@@ -149,10 +149,23 @@ func (g *Gate) Process(ctx context.Context, convID int64, phone, mensagem string
 
 	switch state {
 	case store.GateIdentificado:
-		if gd.Perfil != nil {
+		if gd.Perfil == nil {
+			return g.iniciar(ctx, convID, phone)
+		}
+		// Sem telefone não há cache telefone→perfil a manter: segue com o
+		// perfil da conversa (a API de tools exige telefone de todo jeito).
+		if phone == "" {
 			return Resultado{Acao: AcaoEncaminhar, Perfil: gd.Perfil}
 		}
-		return g.iniciar(ctx, convID, phone)
+		if p := g.cacheHit(ctx, phone); p != nil {
+			return Resultado{Acao: AcaoEncaminhar, Perfil: p}
+		}
+		// Cache expirado numa conversa já identificada: revalida na ORIGEM
+		// (Mongo) pelo login conhecido, sem incomodar o cliente. Mantém o
+		// invariante que a API de tools assume — se o gate encaminhou, a
+		// identidade em `identities` está viva — e dá propósito ao TTL:
+		// perfil desatualizado/acesso revogado é pego aqui.
+		return g.revalidar(ctx, convID, phone, gd.Perfil)
 	case store.GateFalha:
 		// F1: GateFalha não é mais terminal — expirado o TTL, o cliente volta
 		// a ser atendido (cache primeiro; senão, recomeça a identificação).
@@ -203,6 +216,38 @@ func (g *Gate) cacheHit(ctx context.Context, phone string) *mongo.Perfil {
 func (g *Gate) iniciar(ctx context.Context, convID int64, phone string) Resultado {
 	g.salvarGate(ctx, convID, store.GateAguardLogin, gateData{})
 	return Resultado{Acao: AcaoPerguntar, Reply: msgPedirLogin()}
+}
+
+// revalidar recarrega o perfil na origem quando o cache telefone→perfil expirou
+// numa conversa já identificada. Sem interação com o cliente: achou → renova o
+// cache e encaminha; sumiu da base → recomeça a identificação; sem empresa
+// ativa → mesmo tratamento do tratarLogin (rotear humano); origem fora → mesma
+// mensagem de erro temporário (o estado fica como está e a próxima mensagem
+// tenta de novo).
+func (g *Gate) revalidar(ctx context.Context, convID int64, phone string, antigo *mongo.Perfil) Resultado {
+	login := strings.TrimSpace(antigo.Login)
+	if login == "" {
+		return g.iniciar(ctx, convID, phone)
+	}
+	doc, found, err := g.repo.BuscarPorLogin(ctx, login)
+	if err != nil {
+		g.log.Error("revalidacao: buscarPorLogin", "conversation_id", convID, "err", err)
+		return Resultado{Acao: AcaoPerguntar, Reply: msgErroTemporario}
+	}
+	if !found {
+		g.log.Info("revalidacao: login não existe mais na base; reiniciando identificação", "conversation_id", convID)
+		return g.iniciar(ctx, convID, phone)
+	}
+	perfil := mongo.Projetar(doc)
+	if !perfil.TemEmpresaAtiva() {
+		g.salvarGate(ctx, convID, store.GateFalha, gateData{})
+		g.log.Info("revalidacao: login sem empresa ativa", "conversation_id", convID)
+		return Resultado{Acao: AcaoRotearHumano, Reply: msgSemAcesso}
+	}
+	g.renovarCache(ctx, phone, &perfil)
+	g.salvarGate(ctx, convID, store.GateIdentificado, gateData{Perfil: &perfil})
+	g.log.Info("identidade revalidada na origem", "conversation_id", convID)
+	return Resultado{Acao: AcaoEncaminhar, Perfil: &perfil}
 }
 
 func (g *Gate) tratarLogin(ctx context.Context, convID int64, phone, mensagem string, gd gateData) Resultado {
@@ -265,19 +310,27 @@ func (g *Gate) tratarConfirmacao(ctx context.Context, convID int64, phone, mensa
 // identificar grava o perfil na base própria (cache c/ TTL), marca o gate como
 // identificado e devolve a saudação. O dado de confirmação NÃO é persistido.
 func (g *Gate) identificar(ctx context.Context, convID int64, phone string, perfil *mongo.Perfil) Resultado {
-	if phone != "" && perfil != nil {
-		if b, err := json.Marshal(perfil); err == nil {
-			_ = g.store.PutIdentity(ctx, &store.CachedIdentity{
-				Phone:     phone,
-				Login:     perfil.Login,
-				Perfil:    string(b),
-				ExpiresAt: time.Now().Add(g.ttl),
-			})
-		}
-	}
+	g.renovarCache(ctx, phone, perfil)
 	g.salvarGate(ctx, convID, store.GateIdentificado, gateData{Perfil: perfil})
 	g.log.Info("identidade confirmada", "conversation_id", convID, "login", perfil.Login)
 	return Resultado{Acao: AcaoSaudar, Reply: saudacao(perfil)}
+}
+
+// renovarCache grava/renova o perfil no cache telefone→perfil com novo TTL.
+func (g *Gate) renovarCache(ctx context.Context, phone string, perfil *mongo.Perfil) {
+	if phone == "" || perfil == nil {
+		return
+	}
+	b, err := json.Marshal(perfil)
+	if err != nil {
+		return
+	}
+	_ = g.store.PutIdentity(ctx, &store.CachedIdentity{
+		Phone:     phone,
+		Login:     perfil.Login,
+		Perfil:    string(b),
+		ExpiresAt: time.Now().Add(g.ttl),
+	})
 }
 
 // alvoConfirmacao devolve o valor esperado e a pergunta, conforme ConfirmField.
