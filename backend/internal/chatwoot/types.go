@@ -137,6 +137,54 @@ type ConversationCreated struct {
 	Conversation
 }
 
+// ConversationStatusChanged representa o evento conversation_status_changed —
+// payload igual ao conversation_created (a conversa serializada, já com o
+// status novo). O bot assina conversation_updated, que também carrega a
+// mudança de status em changed_attributes; este evento é tratado por
+// robustez, caso a assinatura do webhook mude.
+type ConversationStatusChanged struct {
+	Event string `json:"event"`
+	Conversation
+}
+
+// Status de conversa do Chatwoot (enum: 0=open, 1=resolved, 2=pending,
+// 3=snoozed). O webhook normalmente serializa a string.
+const (
+	StatusOpen     = "open"
+	StatusResolved = "resolved"
+	StatusPending  = "pending"
+	StatusSnoozed  = "snoozed"
+)
+
+// statusFromRaw normaliza um valor de status que pode vir como string ou como
+// inteiro do enum (mesmo cuidado do MessageType).
+func statusFromRaw(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return ""
+	}
+	if s[0] == '"' {
+		var str string
+		_ = json.Unmarshal(raw, &str)
+		return str
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return ""
+	}
+	switch n {
+	case 0:
+		return StatusOpen
+	case 1:
+		return StatusResolved
+	case 2:
+		return StatusPending
+	case 3:
+		return StatusSnoozed
+	}
+	return strconv.Itoa(n)
+}
+
 // ChangeValue é o par current/previous de cada atributo alterado.
 type ChangeValue struct {
 	CurrentValue  json.RawMessage `json:"current_value"`
@@ -150,6 +198,21 @@ func (ev *ConversationUpdated) LabelsChanged() bool {
 		if _, ok := attr["labels"]; ok {
 			return true
 		}
+	}
+	return false
+}
+
+// StatusChangedTo informa se o status da conversa mudou para target NESTA
+// atualização (entrada "status" em changed_attributes com current_value ==
+// target). Uma atualização sem mudança de status devolve false — mesmo que o
+// status atual da conversa seja target.
+func (ev *ConversationUpdated) StatusChangedTo(target string) bool {
+	for _, attr := range ev.ChangedAttributes {
+		cv, ok := attr["status"]
+		if !ok {
+			continue
+		}
+		return statusFromRaw(cv.CurrentValue) == target
 	}
 	return false
 }

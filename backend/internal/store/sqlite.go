@@ -109,6 +109,11 @@ func (s *SQLiteStore) SetGate(ctx context.Context, gs *GateState) error {
 	return err
 }
 
+func (s *SQLiteStore) DeleteGate(ctx context.Context, convID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM gate_state WHERE conversation_id = ?`, convID)
+	return err
+}
+
 func (s *SQLiteStore) GetIdentity(ctx context.Context, phone string) (*CachedIdentity, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT phone, login, perfil, expires_at

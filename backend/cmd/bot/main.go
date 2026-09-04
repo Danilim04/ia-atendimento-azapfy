@@ -41,7 +41,7 @@ func main() {
 	slog.SetDefault(log)
 	log.Info("log inicializado", "level", cfg.LogLevel)
 
-	st, err := store.NewSQLite(cfg.DBPath)
+	st, err := abrirStore(cfg, log)
 	if err != nil {
 		log.Error("abrir store", "err", err)
 		os.Exit(1)
@@ -124,6 +124,25 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Error("shutdown", "err", err)
 	}
+}
+
+// abrirStore escolhe a persistência do gateway: Postgres quando PG_URL está
+// definido (o mesmo Postgres do RAG/pgvector, schema `gateway`), senão o
+// SQLite local em DB_PATH. Falha de conexão no boot derruba o processo — é
+// melhor o compose reiniciar do que atender sem estado.
+func abrirStore(cfg *config.Config, log *slog.Logger) (store.Store, error) {
+	if cfg.PGURL == "" {
+		log.Info("store: sqlite", "path", cfg.DBPath)
+		return store.NewSQLite(cfg.DBPath)
+	}
+	bootCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	st, err := store.NewPostgres(bootCtx, cfg.PGURL)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("store: postgres", "schema", "gateway")
+	return st, nil
 }
 
 // webhookURL monta a URL a cadastrar no webhook do Chatwoot, incluindo o token.

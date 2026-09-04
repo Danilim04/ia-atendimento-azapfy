@@ -19,8 +19,9 @@ WhatsApp → Chatwoot ─webhook→ [bot-azapfy]
         └─ fila FIFO POR CONVERSA + coalescência (DEBOUNCE_JANELA=8s,
            teto DEBOUNCE_TETO=20s): a rajada do cliente vira UM turno;
            nunca há dois turnos simultâneos na mesma conversa
-        └─ gate de identidade (FSM + base própria SQLite; GateFalha expira
-           após GATE_FALHA_TTL)
+        └─ gate de identidade (FSM + base própria em Postgres [PG_URL] ou
+           SQLite; GateFalha expira após GATE_FALHA_TTL e é APAGADO quando a
+           conversa é resolvida no Chatwoot — conversation_updated)
              1ª msg → pede login → resolve login → Mongo (BuscarPorLogin + projeção)
                     → confirma e-mail/nome (tolerante a texto ao redor)
                     → cacheia (telefone→perfil, TTL)
@@ -69,7 +70,7 @@ muda todas as saudações. O tom é afetuoso, mas os passos continuam claros.
 |--------|-------|
 | `internal/chatwoot` | tipos do webhook + cliente REST + verificação HMAC |
 | `internal/webhook` | endpoint HTTP, autenticação, dedup, pool de workers |
-| `internal/store` | SQLite: dedup, estado do gate, base própria (telefone→perfil) |
+| `internal/store` | dedup, estado do gate, base própria (telefone→perfil) — Postgres (`PG_URL`, schema `gateway`, o mesmo do RAG) ou SQLite (`DB_PATH`, dev) |
 | `internal/mongo` | **1ª tool**: `BuscarPorLogin` + `Projetar` (grupos→empresas, só `ativo`) |
 | `internal/identity` | gate FSM (pede login → resolve login determinístico/IA → confirma → identifica/roteia) |
 | `internal/brain` | cliente do cérebro: Contrato A (`POST /chat`) + `ExtrairLogin` (`POST /extract-login`, satisfaz `identity.LoginExtractor`) |

@@ -1,5 +1,10 @@
 // Package store define a persistência: deduplicação de webhooks, estado do gate
 // de identidade por conversa, e a "base própria" (cache telefone→perfil).
+//
+// Dois backends implementam a mesma interface: SQLite (arquivo local, default
+// de dev) e Postgres (PG_URL — o mesmo Postgres do RAG/pgvector, em schema
+// próprio `gateway`). A escolha é feita em main.go; o resto do código só vê
+// a interface.
 package store
 
 import (
@@ -43,6 +48,11 @@ type Store interface {
 	GetGate(ctx context.Context, convID int64) (*GateState, error)
 	// SetGate insere ou atualiza o estado do gate.
 	SetGate(ctx context.Context, gs *GateState) error
+	// DeleteGate apaga o estado do gate da conversa (idempotente: conversa sem
+	// estado não é erro). Usado quando a conversa é RESOLVIDA no Chatwoot — o
+	// episódio acabou e a próxima mensagem começa do zero (cache de identidade
+	// à parte, que é por telefone).
+	DeleteGate(ctx context.Context, convID int64) error
 
 	// GetIdentity devolve o perfil em cache para o telefone, ou nil se ausente
 	// ou expirado.

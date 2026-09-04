@@ -20,7 +20,8 @@ RUN apk add --no-cache ca-certificates tzdata && \
 COPY --from=build /out/bot /usr/local/bin/bot
 USER app
 
-# Estado do gate de identidade (sqlite) — montar volume em /data.
+# Fallback SQLite (só quando PG_URL está vazio) — montar volume em /data.
+# Com PG_URL o estado do gateway vive no Postgres (schema `gateway`).
 ENV DB_PATH=/data/gateway.db
 VOLUME /data
 

@@ -12,8 +12,11 @@ Ou seja:
      IGUAL ao que o Chatwoot envia e faz POST no webhook do Go.
   2. O Go processa (gate → Contrato A → grafo) e, para responder, chama a REST
      API do Chatwoot. Basta apontar `CHATWOOT_BASE_URL` do Go para este mock:
-     ele implementa `.../conversations/{id}/messages` e `.../labels`, captura a
-     resposta do bot e mostra no chat.
+     ele implementa `.../conversations/{id}/messages`, `.../labels` e
+     `.../toggle_status`, captura a resposta do bot e mostra no chat.
+  3. O botão "Resolver conversa" faz o papel do atendente: status → resolved,
+     etiquetas de fila removidas e `conversation_updated` emitido para o Go
+     (que apaga o estado do gate daquela conversa).
 
 Rodar:
     python3 mock_chatwoot.py                  # porta 9000 (default)
@@ -73,7 +76,7 @@ def _add_message(conv_id: int, role: str, content: str, phone: str | None = None
     global _SEQ
     with _LOCK:
         conv = _CONVERSATIONS.setdefault(
-            conv_id, {"phone": phone, "labels": [CONFIG["label_bot"]], "messages": []}
+            conv_id, {"phone": phone, "labels": [CONFIG["label_bot"]], "status": "open", "messages": []}
         )
         if phone:
             conv["phone"] = phone
@@ -88,9 +91,9 @@ def _snapshot(conv_id: int, since: int) -> dict:
     with _LOCK:
         conv = _CONVERSATIONS.get(conv_id)
         if not conv:
-            return {"messages": [], "labels": [CONFIG["label_bot"]]}
+            return {"messages": [], "labels": [CONFIG["label_bot"]], "status": "open"}
         novas = [m for m in conv["messages"] if m["id"] > since]
-        return {"messages": novas, "labels": list(conv["labels"])}
+        return {"messages": novas, "labels": list(conv["labels"]), "status": conv.get("status", "open")}
 
 
 # ---------------------------------------------------------------------------
@@ -98,34 +101,12 @@ def _snapshot(conv_id: int, since: int) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _enviar_webhook_para_go(conv_id: int, phone: str, name: str, content: str, msg_id: int) -> None:
-    """Monta o JSON do Chatwoot e faz POST no /webhook do Go.
+def _post_para_go(conv_id: int, payload: dict) -> None:
+    """Faz POST de um evento (mesmo shape do Chatwoot) no /webhook do Go.
 
     O Go responde 200 rápido (só enfileira); a resposta do bot chega depois,
     de forma assíncrona, via os endpoints REST mockados abaixo.
     """
-    account_id = int(CONFIG["account_id"])
-    payload = {
-        "event": "message_created",
-        "id": msg_id,
-        "content": content,
-        "message_type": "incoming",  # contato → bot
-        "private": False,
-        "sender": {
-            "id": 1,
-            "name": name or "Cliente Mock",
-            "type": "contact",
-            "phone_number": phone,
-        },
-        "conversation": {
-            "id": conv_id,
-            "account_id": account_id,
-            "status": "open",
-            "labels": [CONFIG["label_bot"]],
-            "meta": {"sender": {"name": name, "phone_number": phone}},
-        },
-        "account": {"id": account_id, "name": "Mock"},
-    }
     url = CONFIG["go_webhook"]
     if CONFIG["token"]:
         sep = "&" if "?" in url else "?"
@@ -134,7 +115,7 @@ def _enviar_webhook_para_go(conv_id: int, phone: str, name: str, content: str, m
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
-    # Delivery id único → passa pela deduplicação do Go (cada msg é processada).
+    # Delivery id único → passa pela deduplicação do Go (cada evento é processado).
     req.add_header("X-Chatwoot-Delivery", uuid.uuid4().hex)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -147,6 +128,77 @@ def _enviar_webhook_para_go(conv_id: int, phone: str, name: str, content: str, m
             f"⚠️ não consegui falar com o backend Go em {CONFIG['go_webhook']}: {exc}. "
             "O Go está no ar (go run ./cmd/bot)?",
         )
+
+
+def _conversa_payload(conv_id: int, phone: str | None, name: str | None) -> dict:
+    """Bloco `conversation` como o Chatwoot serializa — com as etiquetas e o
+    status ATUAIS da conversa mockada (é isso que o gate de borda do Go lê)."""
+    with _LOCK:
+        conv = _CONVERSATIONS.get(conv_id) or {}
+        labels = list(conv.get("labels", [CONFIG["label_bot"]]))
+        status = conv.get("status", "open")
+        phone = phone or conv.get("phone") or ""
+    return {
+        "id": conv_id,
+        "account_id": int(CONFIG["account_id"]),
+        "status": status,
+        "labels": labels,
+        "meta": {"sender": {"name": name or "Cliente Mock", "phone_number": phone}},
+    }
+
+
+def _enviar_webhook_para_go(conv_id: int, phone: str, name: str, content: str, msg_id: int) -> None:
+    """Emite `message_created` (contato → bot). Como no Chatwoot, a mensagem do
+    contato REABRE a conversa resolvida (sem conversation_created) e as
+    etiquetas ficam como estavam — é o cenário do "chamado novo depois de
+    resolvido"."""
+    with _LOCK:
+        conv = _CONVERSATIONS.get(conv_id)
+        if conv and conv.get("status") == "resolved":
+            conv["status"] = "open"
+    payload = {
+        "event": "message_created",
+        "id": msg_id,
+        "content": content,
+        "message_type": "incoming",  # contato → bot
+        "private": False,
+        "sender": {
+            "id": 1,
+            "name": name or "Cliente Mock",
+            "type": "contact",
+            "phone_number": phone,
+        },
+        "conversation": _conversa_payload(conv_id, phone, name),
+        "account": {"id": int(CONFIG["account_id"]), "name": "Mock"},
+    }
+    _post_para_go(conv_id, payload)
+
+
+def _mudar_status(conv_id: int, novo: str, limpar_etiquetas: bool = False) -> None:
+    """Muda o status da conversa e emite `conversation_updated` com a mudança em
+    `changed_attributes` — é o que o Go usa para apagar o estado do gate quando
+    a conversa é RESOLVIDA. `limpar_etiquetas` imita a automação do Chatwoot do
+    cliente, que tira a etiqueta de fila ao resolver."""
+    with _LOCK:
+        conv = _CONVERSATIONS.setdefault(
+            conv_id, {"phone": None, "labels": [CONFIG["label_bot"]], "status": "open", "messages": []}
+        )
+        anterior = conv.get("status", "open")
+        conv["status"] = novo
+        if limpar_etiquetas:
+            conv["labels"] = []
+    if anterior == novo:
+        return
+    payload = {
+        "event": "conversation_updated",
+        "changed_attributes": [{"status": {"current_value": novo, "previous_value": anterior}}],
+        **_conversa_payload(conv_id, None, None),
+    }
+    aviso = f"📌 status: {anterior} → {novo}"
+    if limpar_etiquetas:
+        aviso += "  (etiquetas de fila removidas — como a automação do Chatwoot)"
+    _add_message(conv_id, "system", aviso)
+    _post_para_go(conv_id, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +283,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "message_id": msg["id"]})
             return
 
+        # 1b) Front → mock: o "atendente" resolveu a conversa (como no Chatwoot).
+        if path == "/api/resolve":
+            body = self._read_json()
+            try:
+                conv_id = int(body.get("conversation_id"))
+            except (TypeError, ValueError):
+                self._json({"erro": "conversation_id inválido"}, status=400)
+                return
+            _mudar_status(conv_id, "resolved", limpar_etiquetas=True)
+            self._json({"ok": True})
+            return
+
         # 2) Go → mock: o bot "responde no Chatwoot" (REST API mockada).
         m = _CW_ROUTE.match(path)
         if m:
@@ -248,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
                 labels = body.get("labels") or []
                 with _LOCK:
                     conv = _CONVERSATIONS.setdefault(
-                        conv_id, {"phone": None, "labels": [], "messages": []}
+                        conv_id, {"phone": None, "labels": [], "status": "open", "messages": []}
                     )
                     conv["labels"] = list(labels)
                 rotulo = ", ".join(labels) or "—"
@@ -258,7 +322,13 @@ class Handler(BaseHTTPRequestHandler):
                 _add_message(conv_id, "system", aviso)
                 self._json({"ok": True})
                 return
-            # toggle_status u outros: aceita e ignora.
+            if kind == "toggle_status":
+                # Como o Chatwoot: mudar o status dispara conversation_updated.
+                novo = str(body.get("status") or "").strip().lower()
+                if novo:
+                    _mudar_status(conv_id, novo)
+                self._json({"ok": True})
+                return
             self._json({"ok": True})
             return
 
@@ -305,9 +375,10 @@ INDEX_HTML = r"""<!doctype html>
     <h1>📱 Mock Chatwoot</h1>
     <input id="phone" placeholder="telefone (ex.: +5511999990001)" size="22">
     <button id="novo" class="sec">Nova conversa</button>
+    <button id="resolver" class="sec" disabled title="faz o papel do atendente: resolve a conversa no Chatwoot">Resolver conversa</button>
     <span class="pill" id="info">—</span>
   </header>
-  <div class="hint" id="hint">Defina um telefone e clique em <b>Nova conversa</b> para começar. A primeira mensagem aciona o gate de identidade (login → confirmação).</div>
+  <div class="hint" id="hint">Defina um telefone e clique em <b>Nova conversa</b> para começar. A primeira mensagem aciona o gate de identidade (login → confirmação). <b>Resolver conversa</b> imita o atendente encerrando o atendimento; a mensagem seguinte reabre a conversa.</div>
   <div id="log"></div>
   <footer>
     <input id="msg" placeholder="Digite uma mensagem..." autocomplete="off" disabled>
@@ -356,6 +427,7 @@ function novaConversa() {
   $("hint").style.display = "none";
   $("msg").disabled = false;
   $("send").disabled = false;
+  $("resolver").disabled = false;
   $("msg").focus();
   if (polling) clearInterval(polling);
   polling = setInterval(poll, 800);
@@ -378,7 +450,22 @@ async function enviar() {
   }
 }
 
+async function resolver() {
+  if (!convId) return;
+  try {
+    await fetch("/api/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_id: convId }),
+    });
+    poll();
+  } catch (e) {
+    addBubble("system", "⚠️ falha ao resolver no mock");
+  }
+}
+
 $("novo").addEventListener("click", novaConversa);
+$("resolver").addEventListener("click", resolver);
 $("send").addEventListener("click", enviar);
 $("msg").addEventListener("keydown", (e) => { if (e.key === "Enter") enviar(); });
 $("phone").addEventListener("keydown", (e) => { if (e.key === "Enter") novaConversa(); });

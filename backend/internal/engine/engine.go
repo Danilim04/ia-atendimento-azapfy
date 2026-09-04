@@ -160,10 +160,38 @@ func (e *Engine) processarLote(ctx context.Context, lote []inbound) {
 	}
 }
 
-// HandleConversationUpdated: nesta fase a identificação é dirigida pela primeira
-// mensagem do cliente, então mudanças de etiqueta só são logadas.
+// HandleConversationUpdated reage a UMA mudança: a conversa foi RESOLVIDA no
+// Chatwoot. Mudanças de etiqueta continuam sem ação (a identificação é dirigida
+// pela mensagem do cliente).
 func (e *Engine) HandleConversationUpdated(ctx context.Context, ev *chatwoot.ConversationUpdated) {
-	e.log.Debug("conversation_updated (sem ação nesta fase)", "conversation_id", ev.Conversation.ID)
+	if !ev.StatusChangedTo(chatwoot.StatusResolved) {
+		e.log.Debug("conversation_updated sem resolução (sem ação)", "conversation_id", ev.ID)
+		return
+	}
+	e.encerrarEpisodio(ctx, ev.ID)
+}
+
+// HandleConversationStatusChanged é o mesmo tratamento pelo evento dedicado do
+// Chatwoot (só chega se o webhook assinar conversation_status_changed).
+func (e *Engine) HandleConversationStatusChanged(ctx context.Context, ev *chatwoot.ConversationStatusChanged) {
+	if ev.Status != chatwoot.StatusResolved {
+		return
+	}
+	e.encerrarEpisodio(ctx, ev.ID)
+}
+
+// encerrarEpisodio apaga o estado do gate da conversa resolvida. Resolver é o
+// fim do episódio: o Chatwoot REUTILIZA a conversa quando o contato volta a
+// escrever, e sem isto uma conversa em GateFalha ("roteada") ficaria muda
+// até o GATE_FALHA_TTL vencer — cliente com chamado novo sem resposta. O cache
+// telefone→perfil (`identities`) NÃO é tocado: quem já se identificou volta
+// direto ao cérebro na próxima mensagem, sem novo login.
+func (e *Engine) encerrarEpisodio(ctx context.Context, convID int64) {
+	if err := e.st.DeleteGate(ctx, convID); err != nil {
+		e.log.Error("apagar estado do gate ao resolver", "conversation_id", convID, "err", err)
+		return
+	}
+	e.log.Info("conversa resolvida: estado do gate apagado", "conversation_id", convID)
 }
 
 // HandleConversationCreated coloca conversas novas na fila do bot: aplica a

@@ -22,7 +22,11 @@ type Config struct {
 	WebhookSecret     string
 	WebhookToken      string // token na query da URL do webhook (?token=...)
 
+	// Persistência do gateway (dedup, estado do gate, cache telefone→perfil).
+	// PGURL preenchido = Postgres (o MESMO do RAG/pgvector, schema `gateway`);
+	// vazio = SQLite em DBPath (dev/local).
 	DBPath string
+	PGURL  string
 
 	// LabelBot: só processa conversas com esta etiqueta (gate de borda). Vazio =
 	// processa toda mensagem de entrada do contato. LabelHumano: fila para onde a
@@ -84,6 +88,7 @@ func Load() (*Config, error) {
 		WebhookSecret:     getenv("WEBHOOK_SECRET", ""),
 		WebhookToken:      getenv("WEBHOOK_TOKEN", ""),
 		DBPath:            getenv("DB_PATH", "gateway.db"),
+		PGURL:             strings.TrimSpace(getenv("PG_URL", "")),
 		LabelBot:          getenv("LABEL_BOT", "fila-bot"),
 		LabelHumano:       getenv("LABEL_HUMANO", "fila-humano"),
 		MongoURI:          getenv("MONGO_URI", ""),

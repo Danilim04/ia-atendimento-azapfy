@@ -4,7 +4,8 @@
 #
 #   1. Sem build e sem portas publicadas: as imagens chegam prontas via
 #      docker load (deploy/deploy-remote.sh) e NINGUÉM fala com o bot pela
-#      internet — só o Chatwoot, por dentro da rede docker.
+#      internet — só o Chatwoot, por dentro da rede docker. O Postgres
+#      (pgvector) também não publica porta: só brain e gateway o alcançam.
 #   2. O gateway entra na rede da stack omni-route (omniroute_default), onde
 #      vivem o Chatwoot e o Traefik do servidor, com o alias `azapfy-bot`:
 #      - webhook do Chatwoot →  http://azapfy-bot:8080/webhook?token=…
@@ -17,8 +18,8 @@
 # Requer compose >= 2.24.4 (tags !reset).
 # ==============================================================================
 services:
-  brain:
-    build: !reset null
+  pgvector:
+    # Só a rede interna da stack (brain + gateway); nada publicado no host.
     ports: !reset []
     restart: unless-stopped
     logging: &log
@@ -26,6 +27,12 @@ services:
       options:
         max-size: '10m'
         max-file: '3'
+
+  brain:
+    build: !reset null
+    ports: !reset []
+    restart: unless-stopped
+    logging: *log
 
   gateway:
     build: !reset null

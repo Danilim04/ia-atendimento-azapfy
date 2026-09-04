@@ -221,6 +221,40 @@ func TestGateFalhaExpiraEReinicia(t *testing.T) {
 	}
 }
 
+func TestGateResolvidoApagaEstadoEReiniciaSemEsperarTTL(t *testing.T) {
+	// Conversa roteada a humano (GateFalha) e depois RESOLVIDA no Chatwoot: a
+	// engine apaga o estado (DeleteGate). A próxima mensagem do cliente tem de
+	// ser atendida na hora — sem esperar o GATE_FALHA_TTL (1h aqui).
+	st, err := store.NewSQLite(filepath.Join(t.TempDir(), "gate.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	repo := fakeRepo{docs: map[string]mongo.UsuarioDoc{}}
+	g := New(st, repo, "email", 3, time.Hour, time.Hour, nil, nil)
+	ctx := context.Background()
+	const conv = int64(23)
+	const phone = "5511000000002"
+
+	g.Process(ctx, conv, phone, "oi")
+	g.Process(ctx, conv, phone, "x")
+	g.Process(ctx, conv, phone, "x")
+	if r := g.Process(ctx, conv, phone, "x"); r.Acao != AcaoRotearHumano {
+		t.Fatalf("3ª tentativa: esperava rotear humano, veio %q", r.Acao)
+	}
+	// TTL vivo: sem a resolução, a conversa fica muda.
+	if r := g.Process(ctx, conv, phone, "alguém aí?"); r.Acao != AcaoIgnorar {
+		t.Fatalf("falha dentro do TTL: esperava ignorar, veio %q", r.Acao)
+	}
+	// O atendente resolveu a conversa → engine apaga o gate.
+	if err := st.DeleteGate(ctx, conv); err != nil {
+		t.Fatalf("deleteGate: %v", err)
+	}
+	if r := g.Process(ctx, conv, phone, "preciso abrir outro chamado"); r.Acao != AcaoPerguntar {
+		t.Fatalf("pós-resolução: esperava perguntar (reinício), veio %q", r.Acao)
+	}
+}
+
 func TestGateConfirmacaoToleraTextoAoRedor(t *testing.T) {
 	// F2: assinatura de relay ("**Claude:**") ou frase em volta do e-mail não
 	// podem queimar tentativa de cliente legítimo.

@@ -90,3 +90,13 @@ o login na próxima conversa; use um telefone diferente para testar o fluxo do z
 - Só trata `message_created` (entrada do contato) e as respostas do agente; não
   simula anexos, agentes humanos digitando, etc.
 - Não persiste: as transcrições vivem em memória enquanto o mock roda.
+
+## Resolver conversa (teste do "episódio encerrado")
+
+O botão **Resolver conversa** no front faz o que o atendente faria no
+Chatwoot: marca a conversa como `resolved`, tira as etiquetas de fila e
+emite `conversation_updated` (com `status` em `changed_attributes`) para o
+Go — que **apaga o estado do gate** daquela conversa. A próxima mensagem
+reabre a conversa (o Go readota com `fila-bot`) e o cliente é atendido na
+hora, sem esperar o `GATE_FALHA_TTL`. O `toggle_status` chamado pelo Go
+também emite o mesmo evento, como o Chatwoot real.
