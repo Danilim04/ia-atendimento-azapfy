@@ -26,8 +26,10 @@ COPY src/ src/
 COPY docs/ docs/
 COPY server.py .
 
-# docs Markdown → chunks → ChromaDB persistido (baixa o modelo de embeddings
-# para o HF_HOME da imagem — o retriever reusa o mesmo cache em runtime).
+# docs Markdown → chunks → ChromaDB persistido, SEMPRE com o modelo local
+# fixo (CHROMA_EMBEDDINGS_MODEL em src/rag/ingest.py; baixado para o HF_HOME
+# da imagem). É o índice de rollback offline. Em produção o agente lê o
+# pgvector, embutido pelo OpenRouter (EMBEDDINGS_PROVIDER=openrouter).
 RUN OPENROUTER_API_KEY=dummy-build-ingest \
     python -m src.rag.ingest --docs-dir docs --persist-dir /app/chroma_db
 

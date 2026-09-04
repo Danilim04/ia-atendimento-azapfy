@@ -198,6 +198,7 @@ def executar_sync(
     limiar_remocao: float = 0.2,
     permitir_remocao_em_massa: bool = False,
     dry_run: bool = False,
+    reconstruir_se_modelo_mudou: bool = False,
 ) -> ResultadoSync:
     """Executa um ciclo de sincronização. Levanta exceção quando aborta.
 
@@ -212,12 +213,19 @@ def executar_sync(
 
     registrado = indice.modelo_registrado()
     if registrado is not None and registrado != embedding_model:
-        if not full:
+        if not full and not reconstruir_se_modelo_mudou:
             raise ErroModeloIncompativel(
                 f"índice foi gerado com '{registrado}', config atual é "
                 f"'{embedding_model}' — misturar espaços vetoriais degrada a "
                 "busca silenciosamente; rode com --full para reconstruir"
             )
+        # Troca de modelo assumida (deploy com --reconstruir-se-modelo-mudou ou
+        # --full): o índice inteiro é refeito no novo espaço vetorial.
+        logger.warning(
+            "sync_modelo_trocado de=%s para=%s — reconstruindo o índice inteiro",
+            registrado, embedding_model,
+        )
+        full = True
         if not dry_run:
             indice.limpar_tudo(embedding_model, dim)
 
@@ -378,6 +386,9 @@ def _cli() -> None:
                         help="Trata ausência na listagem como remoção (só fonte local).")
     parser.add_argument("--permitir-remocao-em-massa", action="store_true",
                         help="Libera um ciclo com remoções acima do limiar (confirmação humana).")
+    parser.add_argument("--reconstruir-se-modelo-mudou", action="store_true",
+                        help="Se EMBEDDINGS_MODEL difere do registrado no índice, refaz tudo "
+                             "(em vez de abortar). Usado pelo deploy; o cron segue estrito.")
     args = parser.parse_args()
 
     if not settings.pgvector_url:
@@ -390,6 +401,8 @@ def _cli() -> None:
         _preflight_api(fonte)
     indice = PgIndice.conectar(settings.pgvector_url)
     embeddings = get_embeddings()
+    logger.info("sync_embeddings provider=%s modelo=%s",
+                settings.embeddings_provider, settings.embeddings_model)
 
     try:
         resultado = executar_sync(
@@ -404,6 +417,7 @@ def _cli() -> None:
             limiar_remocao=settings.sync_limiar_remocao,
             permitir_remocao_em_massa=args.permitir_remocao_em_massa,
             dry_run=args.dry_run,
+            reconstruir_se_modelo_mudou=args.reconstruir_se_modelo_mudou,
         )
     except (ErroDeFonte, TravaRemocaoMassa, ErroModeloIncompativel) as exc:
         logger.error("sync_abortado motivo=%s", exc)

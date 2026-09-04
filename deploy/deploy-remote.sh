@@ -85,7 +85,10 @@ echo "→ [5/8] Postgres no ar + ingestão da base de conhecimento (AzapDocs →
 # como container efêmero. Falha PARCIAL (ex.: um documento vazio na fonte) não
 # derruba o deploy: o índice é fail-soft por documento e o cron diário insiste.
 # O que derruba é índice VAZIO — portão do healthcheck no passo 7.
-if "${SSH[@]}" "cd $DEST && docker compose run --rm -T brain python -m src.rag.sync --fonte api"; then
+# --reconstruir-se-modelo-mudou: trocar EMBEDDINGS_PROVIDER/MODEL no .env é
+# uma decisão de deploy — o índice é refeito no novo espaço vetorial aqui
+# mesmo (o cron diário continua estrito e abortaria).
+if "${SSH[@]}" "cd $DEST && docker compose run --rm -T brain python -m src.rag.sync --fonte api --reconstruir-se-modelo-mudou"; then
   echo "   ingestão concluída sem falhas."
 else
   echo "   AVISO: ingestão terminou com falha/trava (exit != 0) — ver a saída acima."

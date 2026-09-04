@@ -26,6 +26,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "azapfy_kb"
+# Modelo FIXO do Chroma embutido na imagem (rollback offline). É gerado no
+# build e consultado com este mesmo modelo, sempre local — não segue
+# EMBEDDINGS_PROVIDER/EMBEDDINGS_MODEL (que valem para o pgvector).
+CHROMA_EMBEDDINGS_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Cabeçalhos Markdown usados para fatiar cada doc em seções citáveis.
 _HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3")]
@@ -162,8 +166,8 @@ def ingest(
 
 
 def _cli() -> None:
+    from src.agent.llm import get_local_embeddings
     from src.config import get_settings
-    from src.rag.retriever import get_embeddings
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -171,7 +175,8 @@ def _cli() -> None:
     settings = get_settings()
 
     parser = argparse.ArgumentParser(
-        description="Ingere as docs Markdown da Azapfy no ChromaDB persistido."
+        description="Ingere as docs Markdown da Azapfy no ChromaDB persistido "
+                    f"(sempre com o modelo local {CHROMA_EMBEDDINGS_MODEL})."
     )
     parser.add_argument(
         "--docs-dir",
@@ -189,7 +194,7 @@ def _cli() -> None:
     parser.add_argument("--chunk-overlap", type=int, default=settings.rag_chunk_overlap)
     args = parser.parse_args()
 
-    embeddings = get_embeddings()
+    embeddings = get_local_embeddings(CHROMA_EMBEDDINGS_MODEL)
     store = ingest(
         args.docs_dir,
         args.persist_dir,

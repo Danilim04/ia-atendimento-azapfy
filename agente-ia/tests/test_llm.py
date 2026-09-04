@@ -18,13 +18,16 @@ from src.config import get_settings
 
 @pytest.fixture(autouse=True)
 def _reset_factory_caches():
-    llm_factory.get_llm.cache_clear()
-    llm_factory.get_classifier_llm.cache_clear()
-    llm_factory.get_embeddings.cache_clear()
+    def _limpar():
+        llm_factory.get_llm.cache_clear()
+        llm_factory.get_classifier_llm.cache_clear()
+        llm_factory.get_embeddings.cache_clear()
+        llm_factory.get_local_embeddings.cache_clear()
+        get_settings.cache_clear()
+
+    _limpar()
     yield
-    llm_factory.get_llm.cache_clear()
-    llm_factory.get_classifier_llm.cache_clear()
-    llm_factory.get_embeddings.cache_clear()
+    _limpar()
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +127,73 @@ def test_get_embeddings_constroi_huggingface_com_settings(monkeypatch):
     assert capturado["model_name"] == settings.embeddings_model
     assert capturado["model_kwargs"] == {"device": "cpu"}
     assert capturado["encode_kwargs"] == {"normalize_embeddings": True}
+
+
+def test_get_embeddings_openrouter_usa_endpoint_embeddings_com_texto_cru(monkeypatch):
+    """Provider openrouter: OpenAIEmbeddings apontado para o OpenRouter, com a
+    chave do LLM, headers de boa cidadania e SEM tokenização tiktoken
+    (check_embedding_ctx_length=False — o OpenRouter recebe texto)."""
+    capturado: dict = {}
+
+    class FakeOpenAIEmbeddings:
+        def __init__(self, **kwargs):
+            capturado.update(kwargs)
+
+    import langchain_openai
+
+    monkeypatch.setattr(langchain_openai, "OpenAIEmbeddings", FakeOpenAIEmbeddings)
+    monkeypatch.setenv("EMBEDDINGS_PROVIDER", "openrouter")
+    monkeypatch.setenv("EMBEDDINGS_MODEL", "openai/text-embedding-3-small")
+    get_settings.cache_clear()
+
+    import src.agent.llm as llm_mod
+
+    out = llm_mod.get_embeddings()
+    assert isinstance(out, FakeOpenAIEmbeddings)
+    settings = get_settings()
+    assert capturado["model"] == "openai/text-embedding-3-small"
+    assert capturado["openai_api_base"] == settings.openrouter_base_url
+    assert capturado["openai_api_key"] == settings.openrouter_api_key
+    assert capturado["default_headers"]["X-Title"] == settings.app_title
+    assert capturado["check_embedding_ctx_length"] is False
+    assert capturado["request_timeout"] == settings.llm_timeout
+
+
+def test_get_embeddings_provider_invalido_falha_alto(monkeypatch):
+    monkeypatch.setenv("EMBEDDINGS_PROVIDER", "cohere")
+    get_settings.cache_clear()
+    with pytest.raises(ValueError, match="EMBEDDINGS_PROVIDER"):
+        llm_factory.get_embeddings()
+
+
+def test_chroma_de_rollback_consulta_sempre_com_o_modelo_local(monkeypatch):
+    """Mesmo com provider openrouter, o Chroma embutido usa o modelo local fixo
+    com que foi gerado no build — misturar espaços vetoriais seria lixo mudo."""
+    capturado: dict = {}
+
+    class FakeHFEmbeddings:
+        def __init__(self, **kwargs):
+            capturado.update(kwargs)
+
+    class FakeChroma:
+        def __init__(self, **kwargs):
+            capturado["embedding_function"] = kwargs["embedding_function"]
+
+    import langchain_chroma
+    import langchain_huggingface
+
+    monkeypatch.setattr(langchain_huggingface, "HuggingFaceEmbeddings", FakeHFEmbeddings)
+    monkeypatch.setattr(langchain_chroma, "Chroma", FakeChroma)
+    monkeypatch.setenv("EMBEDDINGS_PROVIDER", "openrouter")
+    monkeypatch.setenv("EMBEDDINGS_MODEL", "openai/text-embedding-3-small")
+    get_settings.cache_clear()
+
+    from src.rag.ingest import CHROMA_EMBEDDINGS_MODEL
+    from src.rag.retriever import get_vector_store
+
+    get_vector_store()
+    assert isinstance(capturado["embedding_function"], FakeHFEmbeddings)
+    assert capturado["model_name"] == CHROMA_EMBEDDINGS_MODEL
 
 
 def test_retriever_reexporta_get_embeddings_do_llm_factory():

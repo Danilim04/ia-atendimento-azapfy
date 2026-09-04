@@ -398,6 +398,29 @@ def test_modelo_de_embeddings_trocado_recusa_incremental():
     assert r.novos == 1  # tudo re-embedado no espaço novo
 
 
+def test_modelo_trocado_reconstroi_sozinho_quando_o_deploy_pede():
+    """--reconstruir-se-modelo-mudou (usado pelo deploy): troca de
+    EMBEDDINGS_MODEL refaz o índice inteiro em vez de abortar; com o mesmo
+    modelo, a flag não muda nada (ciclo incremental normal)."""
+    fonte = FakeFonte({"a.md": _doc(), "b.md": _doc()})
+    indice = FakeIndice()
+    _sync(fonte, indice)
+
+    r = _sync(fonte, indice, embedding_model="openai/text-embedding-3-small",
+              reconstruir_se_modelo_mudou=True)
+    assert indice.limpezas == 1 and indice.modelo == "openai/text-embedding-3-small"
+    assert r.novos == 2 and r.falhas == 0
+
+    r = _sync(fonte, indice, embedding_model="openai/text-embedding-3-small",
+              reconstruir_se_modelo_mudou=True)
+    assert indice.limpezas == 1 and r.inalterados == 2  # sem troca: incremental
+
+    # dry-run com troca: avisa o plano, mas não limpa nada
+    indice2 = FakeIndice(); _sync(fonte, indice2)
+    r = _sync(fonte, indice2, embedding_model="x", reconstruir_se_modelo_mudou=True, dry_run=True)
+    assert indice2.limpezas == 0 and r.dry_run and r.novos == 0 and r.alterados == 2
+
+
 def test_dry_run_planeja_sem_mutar_nada():
     fonte = FakeFonte({"a.md": _doc(), "b.md": _doc(titulo="Avisos RNTRC")})
     indice = FakeIndice()

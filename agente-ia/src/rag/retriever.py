@@ -10,8 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from src.agent.llm import get_embeddings
-from src.rag.ingest import COLLECTION_NAME
+from src.agent.llm import get_embeddings, get_local_embeddings
+from src.rag.ingest import CHROMA_EMBEDDINGS_MODEL, COLLECTION_NAME
 
 if TYPE_CHECKING:
     from langchain_chroma import Chroma
@@ -26,7 +26,13 @@ def get_vector_store(
     persist_dir: Optional[Path] = None,
     embeddings: Optional["Embeddings"] = None,
 ) -> "Chroma":
-    """Reabre o ChromaDB persistido (sem reingerir)."""
+    """Reabre o ChromaDB persistido (sem reingerir).
+
+    O Chroma é o índice de ROLLBACK, gerado no build da imagem com o modelo
+    local fixo (`CHROMA_EMBEDDINGS_MODEL`) — por isso consulta SEMPRE com esse
+    modelo, independente de EMBEDDINGS_PROVIDER/EMBEDDINGS_MODEL (que valem
+    para o pgvector). Misturar espaços vetoriais devolveria lixo em silêncio.
+    """
     from langchain_chroma import Chroma
 
     if persist_dir is None:
@@ -34,7 +40,7 @@ def get_vector_store(
 
         persist_dir = get_settings().chroma_persist_dir
     if embeddings is None:
-        embeddings = get_embeddings()
+        embeddings = get_local_embeddings(CHROMA_EMBEDDINGS_MODEL)
 
     return Chroma(
         collection_name=COLLECTION_NAME,

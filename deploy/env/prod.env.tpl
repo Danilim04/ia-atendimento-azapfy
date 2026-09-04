@@ -32,7 +32,13 @@ RAG_TOP_K=3
 RAG_CHUNK_SIZE=800
 RAG_CHUNK_OVERLAP=120
 AGENT_MAX_ITERACOES=5
-EMBEDDINGS_MODEL=sentence-transformers/all-MiniLM-L6-v2
+# Embeddings do índice pgvector pelo /embeddings do OpenRouter (mesma chave do
+# LLM; multilíngue; ~US$0,02 por 1M tokens — a base inteira custa < 1 centavo).
+# Trocar provider/modelo aqui = o deploy reconstrói o índice sozinho
+# (--reconstruir-se-modelo-mudou). Rollback offline: EMBEDDINGS_PROVIDER=local
+# + EMBEDDINGS_MODEL=sentence-transformers/all-MiniLM-L6-v2 (ou VECTOR_BACKEND=chroma).
+EMBEDDINGS_PROVIDER=openrouter
+EMBEDDINGS_MODEL=openai/text-embedding-3-small
 # CHECKPOINT_DB_PATH vem do docker-compose.yml (volume brain-data:/data)
 
 # --- Postgres (pgvector): RAG do cérebro + estado do gateway ------------------

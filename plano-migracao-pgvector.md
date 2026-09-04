@@ -93,6 +93,14 @@ docker compose run --rm -T brain python -m src.rag.sync --fonte api            #
 Saída esperada: `Sync concluído: N novos, ... 0 falhas` e exit 0. Rodar de
 novo em seguida tem que dar `N inalterados` em ~1 s (idempotência).
 
+**Embeddings (2026-09-04):** o índice pgvector de produção usa
+`openai/text-embedding-3-small` pelo `/embeddings` do OpenRouter
+(`EMBEDDINGS_PROVIDER=openrouter` no `prod.env.tpl`; 1536 dims; a base
+inteira custa < 1 centavo para reindexar). O deploy roda o sync com
+`--reconstruir-se-modelo-mudou`: trocar o modelo no template + push refaz o
+índice no novo espaço vetorial. O cron diário segue estrito (aborta se o
+modelo divergir). O Chroma embutido continua local (`all-MiniLM-L6-v2`).
+
 ## Fase 2 — Validação do índice (sem LLM)
 
 A paridade com o Chroma (`python -m src.rag.verificar`) deixou de ser o

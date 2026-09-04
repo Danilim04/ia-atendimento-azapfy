@@ -30,6 +30,17 @@ class Settings(BaseSettings):
         Path("./chroma_db"), alias="CHROMA_PERSIST_DIR"
     )
     docs_dir: Path = Field(Path("./docs"), alias="DOCS_DIR")
+    # Embeddings do índice pgvector (sync + retrieval do agente):
+    #   provider "local"      → sentence-transformers em CPU; EMBEDDINGS_MODEL é
+    #                           o nome HuggingFace (default all-MiniLM-L6-v2).
+    #   provider "openrouter" → POST /embeddings do OpenRouter com a MESMA chave
+    #                           do LLM; EMBEDDINGS_MODEL é o id no OpenRouter
+    #                           (produção: openai/text-embedding-3-small).
+    # Trocar provider/modelo exige reconstruir o índice (sync --full ou
+    # --reconstruir-se-modelo-mudou) — espaços vetoriais não se misturam.
+    # O Chroma embutido na imagem (rollback) NÃO usa isto: ele é sempre local,
+    # com a constante CHROMA_EMBEDDINGS_MODEL de src/rag/ingest.py.
+    embeddings_provider: str = Field("local", alias="EMBEDDINGS_PROVIDER")
     embeddings_model: str = Field(
         "sentence-transformers/all-MiniLM-L6-v2", alias="EMBEDDINGS_MODEL"
     )

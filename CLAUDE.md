@@ -173,8 +173,13 @@ Defaults: agente `google/gemini-3.5-flash` (caching implícito do Gemini; o
 `cache_control` explícito só liga em modelos `anthropic/`, portanto fica
 desativado), classificador `google/gemini-2.5-flash-lite`. Alternativas para
 o agente: `google/gemini-3.7-flash` (mais novo/barato) ou
-`anthropic/claude-haiku-4.5` (religa o `cache_control`). Embeddings são
-**locais** (`sentence-transformers`) para não pagar por embedding.
+`anthropic/claude-haiku-4.5` (religa o `cache_control`). **Embeddings do
+índice pgvector** vêm de `EMBEDDINGS_PROVIDER`: em produção `openrouter`
+com `openai/text-embedding-3-small` (multilíngue, 1536 dims, ~US$0,02/1M
+tokens, pelo `/embeddings` do OpenRouter com a mesma chave); em dev/testes
+`local` (`sentence-transformers`, offline). O **Chroma embutido na imagem**
+(rollback) é sempre local com `CHROMA_EMBEDDINGS_MODEL` (`ingest.py`),
+independente do provider — nunca misture os dois espaços vetoriais.
 
 ### Persona "Zapin" (voz "Azapfy Suporte")
 
@@ -334,8 +339,10 @@ de chave nem de rede. `LANGFUSE_HOST` default é o cloud EU
 - **Mudar `rag_chunk_size`/`rag_chunk_overlap` exige re-ingestão**
   (`python -m src.rag.ingest` no Chroma; `python -m src.rag.sync --full` no
   pgvector); mudar `rag_top_k` não (é parâmetro de query). Trocar
-  `EMBEDDINGS_MODEL` faz o sync incremental **recusar** rodar (espaços
-  vetoriais não se misturam) até um `--full`.
+  `EMBEDDINGS_PROVIDER`/`EMBEDDINGS_MODEL` faz o sync incremental (cron)
+  **recusar** rodar (espaços vetoriais não se misturam) até um `--full`; o
+  deploy passa `--reconstruir-se-modelo-mudou` e refaz o índice sozinho —
+  trocar o modelo no `prod.env.tpl` + push é a virada inteira.
 - **No sync incremental, o sinal de mudança é o hash dos METADADOS da listagem**
   (`titulo+categoria+updated_at+deleted`) — `updated_at` fica DENTRO do hash
   por decisão de projeto (preferimos reprocessar à toa a perder mudança real;

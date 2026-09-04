@@ -46,9 +46,10 @@ def comparar(consultas: list[str], k: int) -> tuple[float, list[str]]:
 
     settings = get_settings()
     embeddings = get_embeddings()
-    chroma = get_vector_store(embeddings=embeddings).as_retriever(
-        search_kwargs={"k": k}
-    )
+    # Chroma consulta com o modelo local fixo (é assim que foi gerado); o
+    # pgvector com o provider configurado. Com modelos diferentes a paridade
+    # deixa de ser a métrica — use src.rag.consultar.
+    chroma = get_vector_store().as_retriever(search_kwargs={"k": k})
     pg = PgRetriever(settings.pgvector_url, embeddings, k=k)
 
     linhas: list[str] = []
