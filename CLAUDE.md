@@ -47,8 +47,15 @@ python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # preencher OPENROUTER_API_KEY
 
-# Ingerir as docs no ChromaDB (obrigatório antes de rodar a app)
+# Ingerir as docs no ChromaDB (obrigatório antes de rodar a app com VECTOR_BACKEND=chroma)
 python -m src.rag.ingest      # opcional: --docs-dir docs --persist-dir ./chroma_db
+
+# Sync incremental no pgvector (Contrato B; exige PGVECTOR_URL no .env)
+python -m src.rag.sync --fonte api --dry-run     # AzapDocs (DOCS_API_KEY): só o plano
+python -m src.rag.sync --fonte api               # fonte oficial → pgvector (produção)
+python -m src.rag.sync --fonte local             # dev: docs/*.md → pgvector
+python -m src.rag.consultar "pergunta" [--k N]   # top-k do retriever configurado, sem LLM (smoke do RAG)
+python -m src.rag.verificar                      # paridade Chroma × pgvector (só faz sentido com a mesma base)
 
 chainlit run app.py -w        # UI dev (http://localhost:8000)
 uvicorn server:app --port 8001  # API do Contrato A (consumida pelo backend Go)
@@ -59,7 +66,12 @@ pytest tests/test_graph.py::test_grafo_e2e_loop_agent_tools_agent -v   # um test
 # --- Backend Go (rodar de dentro de backend/) ---
 cd backend
 go build ./... && go vet ./... && go test ./...
+# conformidade do store no Postgres REAL (sem PG_TEST_URL só o SQLite é testado)
+PG_TEST_URL=postgresql://rag:rag@localhost:5432/rag go test ./internal/store -v
 go run ./cmd/bot               # gateway Chatwoot (precisa de .env + Mongo + cérebro no ar)
+
+# --- Stack completa (raiz; sobe pgvector + brain + gateway) ---
+docker compose up --build      # exige PGVECTOR_PASSWORD no .env
 ```
 
 A maioria dos testes Python mocka o LLM (sem rede). Os poucos testes de
@@ -131,7 +143,22 @@ do estado e validados pela política (`tool_policy.py`); trabalho determinístic
   conhecimento não é mais tool** (retrieval é etapa fixa do grafo). **Não há
   tool de busca web** — o agente não acessa a internet.
 - **`src/rag/`** — `ingest.py` (docs Markdown → chunks por seção → ChromaDB persistido) e
-  `retriever.py` (reabre o store, `get_retriever(k=...)`).
+  `retriever.py` (reabre o store, `get_retriever(k=...)`; o backend de LEITURA
+  vem de `VECTOR_BACKEND`: `chroma` legado ou `pgvector`). O **pipeline de
+  sincronização incremental** (Contrato B, `contrato-b-api-documentacao-v1.md`
+  na raiz) vive em `fonte.py` (fontes: `FonteDocsLocais` p/ docs/*.md e
+  `FonteAPIDocumentacao` p/ o **AzapDocs** — base é a URL da coleção
+  `…/api/v1/integrations/docs`, chave `azk_…` no header `X-API-Key`,
+  preflight `GET /me` antes do ciclo, `410` = tombstone entre listagem e
+  leitura), `chunking.py`, `sync.py` (motor:
+  hash de metadados da listagem como sinal de mudança, deleção só por
+  tombstone, trava anti-remoção em massa, transação por documento) e
+  `indice_pg.py` (Postgres+pgvector em SQL puro + `PgRetriever`);
+  `verificar.py` compara os dois backends (runbook:
+  `plano-migracao-pgvector.md` na raiz). Os cenários 1–11 do contrato têm
+  teste espelhado em `tests/test_sync.py`. Em produção a rotina diária é o
+  cron instalado pelo ansible (`infra/ansible/roles/base/files/azapfy-sync-docs`,
+  log em `journalctl -t azapfy-sync`).
 - **`src/security/`** — `input_guardrails.py` (2 camadas: heurística regex →
   classificador LLM; em **fluxo ativo** — o agente acabou de perguntar algo — o
   classificador é pulado) e `output_guardrails.py` (escape XML + wrapper
@@ -229,6 +256,19 @@ duplicata ou envelope de relay:
   é **revalidada na origem** (`revalidar` em `gate.go`): re-lookup no Mongo
   pelo login conhecido, sem incomodar o cliente — invariante: se o gate
   encaminhou, a linha em `identities` está viva (a API de tools depende disso).
+- **Conversa resolvida = episódio encerrado** (`HandleConversationUpdated` em
+  `engine.go`): no `conversation_updated` com `status → resolved` o gateway
+  **apaga a linha de `gate_state`** daquela conversa (`DeleteGate`). Motivo: o
+  Chatwoot reutiliza a conversa quando o contato volta a escrever; sem isto,
+  uma conversa em `falha` ("roteada") ficava muda até o `GATE_FALHA_TTL` (1h)
+  vencer — cliente com chamado novo sem resposta. O cache `identities` (por
+  telefone) não é tocado: quem já se identificou volta direto ao cérebro. O
+  TTL fica só como rede de segurança para conversa nunca resolvida.
+- **Persistência** (`internal/store`): interface única, dois backends —
+  **Postgres** quando `PG_URL` está definido (o MESMO Postgres do RAG/pgvector
+  do compose, schema `gateway`, criado no boot) ou **SQLite** em `DB_PATH`
+  (dev sem Postgres e testes). `store_test.go` roda os mesmos testes nos dois
+  quando `PG_TEST_URL` aponta para um Postgres.
 - **Saída WhatsApp-native** (`internal/engine/whatsapp.go`): `DividirBolhas`
   (o prompt instrui o agente a separar a resposta em bolhas com uma linha
   `---`; cada bolha vira uma mensagem, com pausa `BOLHA_PAUSA`=1.5s entre
@@ -292,7 +332,20 @@ de chave nem de rede. `LANGFUSE_HOST` default é o cloud EU
   primária e única. O agente **não acessa a internet**; se a base não cobrir o
   assunto, ele responde com o que tem ou oferece abrir um chamado.
 - **Mudar `rag_chunk_size`/`rag_chunk_overlap` exige re-ingestão**
-  (`python -m src.rag.ingest`); mudar `rag_top_k` não (é parâmetro de query).
+  (`python -m src.rag.ingest` no Chroma; `python -m src.rag.sync --full` no
+  pgvector); mudar `rag_top_k` não (é parâmetro de query). Trocar
+  `EMBEDDINGS_MODEL` faz o sync incremental **recusar** rodar (espaços
+  vetoriais não se misturam) até um `--full`.
+- **No sync incremental, o sinal de mudança é o hash dos METADADOS da listagem**
+  (`titulo+categoria+updated_at+deleted`) — `updated_at` fica DENTRO do hash
+  por decisão de projeto (preferimos reprocessar à toa a perder mudança real;
+  embeddings locais tornam isso barato). Não reintroduza comparação de
+  conteúdo no ciclo diário, e **deleção só por tombstone** — ausência na
+  listagem nunca deleta (a exceção explícita é `--remover-ausentes` da fonte
+  local).
+- **Toda mudança em `store.Store` vale para os DOIS backends** (`sqlite.go`
+  e `postgres.go`) e ganha caso em `store_test.go`; rode com `PG_TEST_URL`
+  antes de subir. O compose de produção usa o Postgres — o SQLite é só dev.
 - **Testes não devem fazer chamadas de rede** por padrão — injete LLM/tools
   mockados nas fábricas (`build_graph(llm=..., tools=...)`). Use chaves reais no
   `.env` só para os smoke tests de integração.

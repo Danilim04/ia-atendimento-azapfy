@@ -36,6 +36,33 @@
     group: '{{ deploy_user }}'
     mode: '0755'
 
+# --- Rotina do RAG (Fase 4 do plano-migracao-pgvector.md) ---------------------
+# Sync diário da base de conhecimento (AzapDocs → pgvector) via compose, como o
+# usuário deploy (grupo docker). Horários em UTC (a VM roda em UTC):
+# 06:30 UTC = 03:30 em Brasília. Log: journalctl -t azapfy-sync.
+- name: Script do sync da base de conhecimento
+  ansible.builtin.copy:
+    src: azapfy-sync-docs
+    dest: /usr/local/bin/azapfy-sync-docs
+    mode: '0755'
+
+- name: Cron — sync incremental diário (03:30 Brasília)
+  ansible.builtin.cron:
+    name: azapfy-bot sync base de conhecimento (incremental)
+    user: '{{ deploy_user }}'
+    minute: '30'
+    hour: '6'
+    job: 'APP_DIR={{ app_dir }} /usr/local/bin/azapfy-sync-docs'
+
+- name: Cron — reconciliação completa semanal (domingo 04:00 Brasília)
+  ansible.builtin.cron:
+    name: azapfy-bot sync base de conhecimento (reconciliação semanal)
+    user: '{{ deploy_user }}'
+    minute: '0'
+    hour: '7'
+    weekday: '0'
+    job: 'APP_DIR={{ app_dir }} /usr/local/bin/azapfy-sync-docs --full'
+
 # --- Hardening sshd -----------------------------------------------------------
 - name: sshd — sem autenticação por senha
   ansible.builtin.lineinfile:

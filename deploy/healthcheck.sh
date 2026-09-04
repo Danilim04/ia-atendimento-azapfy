@@ -3,8 +3,11 @@
 # Valida o deploy NA VPS (sincronizado e executado via SSH pelo
 # deploy-remote.sh; pode ser rodado à mão em /opt/azapfy-bot para diagnosticar).
 #
-# Três portões, na ordem em que uma mensagem real percorre a stack:
-#   1. gateway /health respondendo (processo vivo, Mongo conectado no boot)
+# Cinco portões, na ordem em que uma mensagem real percorre a stack:
+#   0. pgvector aceitando conexão (estado do gateway + índice do RAG) e o
+#      índice do RAG POPULADO (rag_chunks > 0) — com VECTOR_BACKEND=pgvector,
+#      índice vazio = bot que não sabe nada; silêncio não passa
+#   1. gateway /health respondendo (processo vivo, Mongo e Postgres no boot)
 #   2. brain   /health respondendo (grafo compilado, Chroma aberto)
 #   3. gateway alcançável PELA REDE DO CHATWOOT no alias azapfy-bot — é o
 #      caminho do webhook; sem isso o deploy "sobe" mas o bot nunca recebe
@@ -30,6 +33,14 @@ tenta() { # tenta <descrição> <comando…>
   echo "ERRO: $desc não respondeu." >&2
   return 1
 }
+
+tenta "pgvector aceitando conexões (dentro do container)" \
+  docker compose exec -T pgvector pg_isready -h 127.0.0.1 -U rag -d rag
+
+# psql via 127.0.0.1 DENTRO do container: o pg_hba do initdb libera loopback
+# sem senha (a senha só é exigida na rede docker) — nada de segredo aqui.
+tenta "índice do RAG populado (rag_chunks > 0 no pgvector)" \
+  bash -c 'n=$(docker compose exec -T pgvector psql -h 127.0.0.1 -U rag -d rag -Atc "select count(*) from rag_chunks" 2>/dev/null); [ "${n:-0}" -gt 0 ] 2>/dev/null'
 
 tenta "gateway /health (dentro do container)" \
   docker compose exec -T gateway wget -qO- http://127.0.0.1:8080/health

@@ -11,7 +11,7 @@
 # ficam na VPS) ou re-rodar a pipeline num commit anterior.
 #
 # Secrets exigidos: SSH_PRIVATE_KEY · OPENROUTER_API_KEY · MONGO_URI ·
-#                   WEBHOOK_TOKEN · TOOLS_API_TOKEN
+#                   WEBHOOK_TOKEN · TOOLS_API_TOKEN · PGVECTOR_PASSWORD
 # Opcionais:        SAC_API_TOKEN · SAC_SERVICE_COD · CHATWOOT_API_TOKEN
 #                   (a fonte primária do token do Chatwoot é o ESTADO da VM,
 #                   .chatwoot-token — gravado pela pipeline configure-chatwoot)
@@ -115,10 +115,16 @@ jobs:
           MONGO_URI: ${{ secrets.MONGO_URI }}
           WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
           TOOLS_API_TOKEN: ${{ secrets.TOOLS_API_TOKEN }}
+          # Senha do Postgres (pgvector): RAG + estado do gateway. Obrigatória.
+          PGVECTOR_PASSWORD: ${{ secrets.PGVECTOR_PASSWORD }}
           # Opcionais — vazios não quebram o deploy. O token do Chatwoot é
           # bootstrap/override: o estado da VM (.chatwoot-token) tem precedência.
           CHATWOOT_API_TOKEN: ${{ secrets.CHATWOOT_API_TOKEN }}
           SAC_API_TOKEN: ${{ secrets.SAC_API_TOKEN }}
+          # AzapDocs (fonte da base de conhecimento) — chave azk_... e webhook
+          # de alerta do sync. Vazios não quebram o deploy; o sync aborta sem chave.
+          DOCS_API_KEY: ${{ secrets.DOCS_API_KEY }}
+          SYNC_ALERTA_WEBHOOK: ${{ secrets.SYNC_ALERTA_WEBHOOK }}
           SAC_SERVICE_COD: ${{ secrets.SAC_SERVICE_COD }}
           # Langfuse (tracing) — opcionais; vazios = tracing desligado.
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}

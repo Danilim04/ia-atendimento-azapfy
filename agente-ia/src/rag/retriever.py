@@ -47,7 +47,22 @@ def get_retriever(
     k: int = 4,
     persist_dir: Optional[Path] = None,
     embeddings: Optional["Embeddings"] = None,
-) -> "VectorStoreRetriever":
-    """Retorna um retriever top-k pronto para `.invoke(pergunta)`."""
+):
+    """Retorna um retriever top-k pronto para `.invoke(pergunta)`.
+
+    O backend vem de `VECTOR_BACKEND` (`chroma` legado | `pgvector`). Os dois
+    devolvem o mesmo formato (`Document` com `source`/`secao`), então
+    `buscar_chunks` e o grafo não mudam — é o que torna a migração chaveável
+    com rollback instantâneo.
+    """
+    from src.config import get_settings
+
+    settings = get_settings()
+    if settings.vector_backend == "pgvector":
+        from src.rag.indice_pg import PgRetriever
+
+        return PgRetriever(
+            settings.pgvector_url, embeddings or get_embeddings(), k=k
+        )
     store = get_vector_store(persist_dir, embeddings)
     return store.as_retriever(search_kwargs={"k": k})

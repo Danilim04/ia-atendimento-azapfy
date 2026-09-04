@@ -12,8 +12,14 @@
 #
 # O servidor recebe SÓ o necessário pra rodar a stack (allowlist + rsync
 # --delete): compose files e o healthcheck. O .env chega por stdin (nunca por
-# argv) e é reescrito POR INTEIRO a cada deploy — estado local é só o volume
-# do sqlite (gateway-data), que o compose preserva.
+# argv) e é reescrito POR INTEIRO a cada deploy — estado local são os volumes
+# do compose (pgvector-data: Postgres com o índice do RAG e o estado do
+# gateway; brain-data: checkpoints), que o compose preserva.
+#
+# A base de conhecimento é ingerida A CADA deploy (passo 5): AzapDocs →
+# pgvector, rodando na imagem nova do brain ANTES de o brain subir — o agente
+# nasce lendo um índice populado. Entre deploys, o cron diário da VM
+# (azapfy-sync-docs) mantém o índice atualizado.
 # ==============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -42,15 +48,15 @@ BRAIN_IMG="$REPO:brain-$VERSION"
 GATEWAY_IMG="$REPO:gateway-$VERSION"
 
 if [ "$BUILD" = 1 ]; then
-  echo "→ [1/7] Build das imagens ($VERSION)…"
+  echo "→ [1/8] Build das imagens ($VERSION)…"
   docker build -t "$BRAIN_IMG" agente-ia/
   docker build -t "$GATEWAY_IMG" backend/
 else
-  echo "→ [1/7] Build pulado (--skip-build) — usando imagens locais existentes."
+  echo "→ [1/8] Build pulado (--skip-build) — usando imagens locais existentes."
   docker image inspect "$BRAIN_IMG" "$GATEWAY_IMG" > /dev/null
 fi
 
-echo "→ [2/7] Allowlist + rsync da stack…"
+echo "→ [2/8] Allowlist + rsync da stack…"
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
 mkdir -p "$staging/deploy/env"
@@ -64,22 +70,35 @@ rsync -az --delete --exclude='.env' --exclude='.chatwoot-token' \
   "$staging/" "${SSH_USER}@${HOST}:${DEST}/"
 "${SSH[@]}" "chmod +x $DEST/deploy/healthcheck.sh $DEST/deploy/env/apply-server-state.sh"
 
-echo "→ [3/7] Transferindo imagens (docker save | ssh docker load)…"
+echo "→ [3/8] Transferindo imagens (docker save | ssh docker load)…"
 docker save "$BRAIN_IMG" "$GATEWAY_IMG" | gzip | "${SSH[@]}" 'gunzip | docker load'
 
-echo "→ [4/7] .env (por stdin, chmod 600) + estado do servidor…"
+echo "→ [4/8] .env (por stdin, chmod 600) + estado do servidor…"
 "${SSH[@]}" "umask 077 && cat > $DEST/.env" < "$ENV_FILE"
 # CHATWOOT_API_TOKEN vem do estado da VM (.chatwoot-token) quando existir —
 # ver deploy/env/apply-server-state.sh.
 "${SSH[@]}" "$DEST/deploy/env/apply-server-state.sh"
 
-echo "→ [5/7] Up da stack (sem build)…"
+echo "→ [5/8] Postgres no ar + ingestão da base de conhecimento (AzapDocs → pgvector)…"
+"${SSH[@]}" "cd $DEST && docker compose up -d --wait --wait-timeout 180 pgvector"
+# Roda na imagem NOVA do brain (mesmo código e modelo de embeddings baked),
+# como container efêmero. Falha PARCIAL (ex.: um documento vazio na fonte) não
+# derruba o deploy: o índice é fail-soft por documento e o cron diário insiste.
+# O que derruba é índice VAZIO — portão do healthcheck no passo 7.
+if "${SSH[@]}" "cd $DEST && docker compose run --rm -T brain python -m src.rag.sync --fonte api"; then
+  echo "   ingestão concluída sem falhas."
+else
+  echo "   AVISO: ingestão terminou com falha/trava (exit != 0) — ver a saída acima."
+  echo "   O índice já existente continua servindo; corrija a fonte e rode: sudo -u deploy azapfy-sync-docs"
+fi
+
+echo "→ [6/8] Up da stack (sem build)…"
 "${SSH[@]}" "cd $DEST && docker compose up -d --remove-orphans --wait --wait-timeout 300"
 
-echo "→ [6/7] Healthcheck (dentro da rede do Chatwoot)…"
+echo "→ [7/8] Healthcheck (Postgres, índice do RAG, brain, gateway, rede do Chatwoot)…"
 "${SSH[@]}" "cd $DEST && ./deploy/healthcheck.sh"
 
-echo "→ [7/7] Limpeza: mantém as 3 tags mais recentes de cada serviço…"
+echo "→ [8/8] Limpeza: mantém as 3 tags mais recentes de cada serviço…"
 "${SSH[@]}" "for svc in brain gateway; do
   docker images '$REPO' --format '{{.Tag}} {{.CreatedAt}}' \
     | grep \"^\$svc-\" | sort -rk2 | tail -n +4 | awk '{print \$1}' \

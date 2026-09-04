@@ -34,6 +34,22 @@ class Settings(BaseSettings):
         "sentence-transformers/all-MiniLM-L6-v2", alias="EMBEDDINGS_MODEL"
     )
 
+    # Backend de leitura do RAG: "chroma" (legado, default) ou "pgvector".
+    # A migração é chaveável para permitir rollback instantâneo: o sync grava
+    # no pgvector independente deste valor; este valor só decide de onde o
+    # agente LÊ. Ver plano-migracao-pgvector.md na raiz do repo.
+    vector_backend: str = Field("chroma", alias="VECTOR_BACKEND")
+    pgvector_url: str = Field("", alias="PGVECTOR_URL")
+
+    # Fonte "api" do sync (Contrato B — API de documentação do cliente).
+    docs_api_base_url: str = Field("", alias="DOCS_API_BASE_URL")
+    # Chave gerada no AzapDocs (formato azk_...), enviada no header X-API-Key.
+    docs_api_key: str = Field("", alias="DOCS_API_KEY")
+    docs_api_timeout: float = Field(30.0, alias="DOCS_API_TIMEOUT")
+
+    # Trava anti-remoção em massa do sync (fração da base viva por ciclo).
+    sync_limiar_remocao: float = Field(0.2, alias="SYNC_LIMIAR_REMOCAO")
+
     llm_temperature: float = Field(0.2, alias="LLM_TEMPERATURE")
     # Timeout por chamada de LLM. Deve caber DENTRO do BRAIN_TIMEOUT do gateway
     # Go (60s) mesmo num turno com 2-3 chamadas — senão o gateway desiste e o

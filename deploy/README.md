@@ -26,9 +26,19 @@ WhatsApp → Evolution → Chatwoot ──webhook──► gateway (Go)  ──P
   o webhook do Chatwoot aponta para `http://azapfy-bot:8080/webhook?token=…`
   e o gateway fala com a API do Chatwoot em `http://chatwoot-rails:3000`.
 - O cérebro só existe na rede interna da stack do bot (`azapfy-bot_default`).
-- Estado no servidor: **só** o volume `gateway-data` (sqlite do gate de
-  identidade). O `.env` é reescrito por inteiro a cada deploy; imagens chegam
-  por `docker save | ssh docker load` (sem registry).
+- Estado no servidor: os volumes do compose — **`pgvector-data`** (Postgres:
+  índice do RAG + estado do gateway no schema `gateway`; precisa de backup),
+  `brain-data` (checkpoints de conversa) e `gateway-data` (sqlite legado, só
+  para migração manual). O `.env` é reescrito por inteiro a cada deploy;
+  imagens chegam por `docker save | ssh docker load` (sem registry).
+- Secrets novos na pipeline: **`PGVECTOR_PASSWORD`** (obrigatório — sem ele o
+  `render-env.sh` aborta o deploy), **`DOCS_API_KEY`** (chave `azk_…` do
+  AzapDocs; opcional no deploy, mas sem ela o sync da base aborta) e
+  `SYNC_ALERTA_WEBHOOK` (opcional: avisado quando o sync diário falha).
+- Rotina da base de conhecimento: o ansible (role `base`) instala
+  `/usr/local/bin/azapfy-sync-docs` e dois crons do usuário `deploy`
+  (diário 03:30 e domingo 04:00, horário de Brasília). Log:
+  `journalctl -t azapfy-sync`. Runbook: `plano-migracao-pgvector.md`.
 
 ## Pipeline (`.github/workflows/deploy.yml`)
 
@@ -39,8 +49,11 @@ Dispara a cada push na `main` (ou `Run workflow` com uma tag à escolha):
 3. **deploy** — builda `azapfy-bot:brain-<v>` e `azapfy-bot:gateway-<v>` (cache
    GHA), renderiza o `.env` dos secrets (`deploy/env/render-env.sh`, fail-fast
    se faltar secret) e roda `deploy/deploy-remote.sh`: rsync da allowlist →
-   save/load das imagens → `.env` → `compose up --wait` → `healthcheck.sh`
-   (inclui o portão do caminho do webhook pela rede do Chatwoot).
+   save/load das imagens → `.env` → **Postgres up + ingestão da base
+   (AzapDocs → pgvector, na imagem nova do brain)** → `compose up --wait` →
+   `healthcheck.sh` (portões: pgvector, **índice do RAG não-vazio**, gateway,
+   brain, caminho do webhook pela rede do Chatwoot). Falha parcial da ingestão
+   (um doc vazio na fonte) não derruba o deploy; índice vazio derruba.
 
 **Rollback**: `Run workflow` com uma `version` anterior (a VPS guarda as 3
 últimas tags de cada serviço) ou re-rodar a pipeline num commit antigo.
@@ -54,7 +67,9 @@ Dispara a cada push na `main` (ou `Run workflow` com uma tag à escolha):
 | `MONGO_URI` | Mongo da Azapfy (lookup de usuário do gate) |
 | `WEBHOOK_TOKEN` | segredo do `?token=` da URL de webhook cadastrada no Chatwoot |
 | `TOOLS_API_TOKEN` | segredo compartilhado cérebro↔gateway (tools SAC) |
-| `SAC_API_TOKEN` · `SAC_SERVICE_COD` · `CHATWOOT_API_TOKEN` | opcionais (SAC; o token do Chatwoot é só bootstrap/override) |
+| `PGVECTOR_PASSWORD` | senha do Postgres do compose (RAG + estado do gateway); só alfanumérica, entra numa URL |
+| `DOCS_API_KEY` | chave `azk_…` do AzapDocs (escopos `DOCS_LIST` + `DOCS_READ`) — fonte da base de conhecimento |
+| `SAC_API_TOKEN` · `SAC_SERVICE_COD` · `CHATWOOT_API_TOKEN` · `SYNC_ALERTA_WEBHOOK` | opcionais (SAC; o token do Chatwoot é só bootstrap/override; webhook avisado quando o sync diário falha) |
 
 O `CHATWOOT_API_TOKEN` de verdade é **estado da VM**: a pipeline "Configurar
 Chatwoot" grava o access token do usuário "Zapin (bot)" em

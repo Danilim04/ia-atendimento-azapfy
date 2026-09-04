@@ -6,7 +6,8 @@
 #
 # (Diferente do omni-route não há "bloco gerenciado": esta stack não gera
 # segredos no servidor — TODO o .env vem de GitHub Secrets/vars, então o
-# arquivo inteiro é gerenciado. O único estado local é o sqlite no volume.)
+# arquivo inteiro é gerenciado. O estado local são os volumes do compose —
+# pgvector-data (Postgres: RAG + estado do gateway) e brain-data.)
 # ==============================================================================
 
 # --- Imagens (chegam via docker load — ver deploy-remote.sh) ------------------
@@ -33,6 +34,25 @@ RAG_CHUNK_OVERLAP=120
 AGENT_MAX_ITERACOES=5
 EMBEDDINGS_MODEL=sentence-transformers/all-MiniLM-L6-v2
 # CHECKPOINT_DB_PATH vem do docker-compose.yml (volume brain-data:/data)
+
+# --- Postgres (pgvector): RAG do cérebro + estado do gateway ------------------
+# Serviço `pgvector` do compose. A URL é fiação do compose (PGVECTOR_URL no
+# brain, PG_URL no gateway); aqui só a senha (GitHub Secret, obrigatória).
+PGVECTOR_PASSWORD=${PGVECTOR_PASSWORD}
+# Backend de LEITURA do RAG (virada feita em 2026-09-04): o agente lê o índice
+# do pgvector, populado pela ingestão do deploy + cron diário (AzapDocs).
+# Rollback = chroma (índice baked na imagem, só os docs/*.md do repo) + deploy.
+VECTOR_BACKEND=pgvector
+
+# --- Cérebro: fonte da base de conhecimento (AzapDocs, Contrato B) ------------
+# Rotina diária: cron da VM (ansible, /usr/local/bin/azapfy-sync-docs) roda
+# `docker compose run --rm brain python -m src.rag.sync --fonte api`.
+# A chave (azk_...) vem do GitHub Secret DOCS_API_KEY; vazia = sync abortado.
+DOCS_API_BASE_URL=https://intranet.azapfy.com.br/api/v1/integrations/docs
+DOCS_API_KEY=${DOCS_API_KEY}
+DOCS_API_TIMEOUT=30
+# Webhook opcional de alerta do sync (vazio = só journalctl -t azapfy-sync).
+SYNC_ALERTA_WEBHOOK=${SYNC_ALERTA_WEBHOOK}
 
 # --- Observabilidade ----------------------------------------------------------
 LOG_LEVEL=info
@@ -65,7 +85,8 @@ INBOX_ID=5
 CONFIRM_FIELD=email
 MAX_TENTATIVAS=3
 IDENTITY_TTL=24h
-# F1: conversa em "falha" volta a ser atendida depois deste TTL.
+# F1: conversa em "falha" volta a ser atendida depois deste TTL (rede de
+# segurança — a conversa RESOLVIDA no Chatwoot zera o estado do gate na hora).
 GATE_FALHA_TTL=1h
 
 # --- Gateway: robustez de transporte (Bloco A) --------------------------------

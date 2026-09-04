@@ -15,7 +15,9 @@ cd "$(dirname "$0")"
 # (.chatwoot-token, gravado pela pipeline configure-chatwoot e aplicado por
 # apply-server-state.sh POR CIMA do valor renderizado). O secret, se existir,
 # serve só de bootstrap/override manual.
-required=(IMAGE_TAG OPENROUTER_API_KEY MONGO_URI WEBHOOK_TOKEN TOOLS_API_TOKEN)
+# PGVECTOR_PASSWORD é exigida: sem ela o Postgres não sobe e o gateway (que
+# guarda seu estado lá) não inicia.
+required=(IMAGE_TAG OPENROUTER_API_KEY MONGO_URI WEBHOOK_TOKEN TOOLS_API_TOKEN PGVECTOR_PASSWORD)
 
 faltando=()
 for var in "${required[@]}"; do
@@ -29,5 +31,5 @@ fi
 # Lista EXPLÍCITA de substituições — o envsubst não toca em mais nada.
 # Vars OPCIONAIS (fora da lista required, ex.: SAC_*) podem vir vazias: a
 # chave entra vazia e o gateway trata como não configurada.
-vars='$IMAGE_TAG $OPENROUTER_API_KEY $MONGO_URI $CHATWOOT_API_TOKEN $WEBHOOK_TOKEN $TOOLS_API_TOKEN $SAC_API_TOKEN $SAC_SERVICE_COD $LANGFUSE_PUBLIC_KEY $LANGFUSE_SECRET_KEY $LANGFUSE_HOST'
+vars='$IMAGE_TAG $OPENROUTER_API_KEY $MONGO_URI $CHATWOOT_API_TOKEN $WEBHOOK_TOKEN $TOOLS_API_TOKEN $PGVECTOR_PASSWORD $DOCS_API_KEY $SYNC_ALERTA_WEBHOOK $SAC_API_TOKEN $SAC_SERVICE_COD $LANGFUSE_PUBLIC_KEY $LANGFUSE_SECRET_KEY $LANGFUSE_HOST'
 envsubst "$vars" < prod.env.tpl
